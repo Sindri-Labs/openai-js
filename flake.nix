@@ -63,9 +63,13 @@
           pname = "openai-sdk";
           version = (pkgs.lib.importJSON ./package.json).version;
 
-          src = ./.;
+          src = pkgs.lib.cleanSourceWith {
+            src = ./.;
+            filter = path: type: true;
+          };
 
           nativeBuildInputs = [
+            go
             nodejs
             pkgs.yarn
             pkgs.yarnConfigHook
@@ -79,8 +83,17 @@
           buildPhase = ''
             runHook preBuild
 
-            # Run the build script.
+            # Run the TypeScript build.
             yarn build
+
+            # Build the Go WASM module.
+            export HOME=$TMPDIR
+            export GOCACHE=$TMPDIR/go-cache
+            export GOPATH=$TMPDIR/go
+
+            pushd go
+            GOOS=js GOARCH=wasm go build -o main.wasm main.go
+            popd
 
             runHook postBuild
           '';
@@ -91,6 +104,12 @@
             # Copy the built dist directory to output.
             mkdir -p $out
             cp -r dist/* $out/
+
+            # Add WASM module and support files to sindri/wasm directory.
+            mkdir -p $out/sindri/wasm
+            cp go/main.wasm $out/sindri/wasm/
+            cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" $out/sindri/wasm/
+            cp "$(go env GOROOT)/lib/wasm/wasm_exec_node.js" $out/sindri/wasm/
 
             runHook postInstall
           '';
