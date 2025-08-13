@@ -140,7 +140,7 @@
             # Nix tools.
             deadnix
             nil
-            nixfmt
+            nixfmt-rfc-style
             statix
             treefmtEval.config.build.wrapper
 
