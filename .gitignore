@@ -16,5 +16,6 @@ ecosystem-tests/*/openai.tgz
 
 # Sindri Additions.
 .direnv/
+*.wasm
 logs/
 result
