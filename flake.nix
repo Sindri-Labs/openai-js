@@ -20,41 +20,9 @@
         go = pkgs.go_1_24;
         nodejs = pkgs.nodejs_22;
 
-        openai-sdk = pkgs.stdenv.mkDerivation {
-          pname = "openai-sdk-tee";
-          version = "5.12.2";
-
-          src = ./.;
-
-          yarnOfflineCache = pkgs.fetchYarnDeps {
-            yarnLock = ./yarn.lock;
-            hash = "sha256-25mD6XBvrzH4Wt20s65bNITjPGdgG9xOx3hUAVea0yQ=";
-          };
-
-          nativeBuildInputs = with pkgs; [
-            yarnConfigHook
-            yarnBuildHook
-            yarnInstallHook
-            nodejs
-          ];
-
-          yarnBuildScript = "build";
-
-          meta = with pkgs.lib; {
-            description = "Sindri OpenAI-Compatible JS SDK";
-            license = licenses.asl20;
-          };
-        };
       in
       {
-        packages.default = openai-sdk;
         devShells.default = pkgs.mkShell {
-          inputsFrom = [ openai-sdk ];
-
-          nativeBuildInputs = with pkgs; [
-            yarnConfigHook
-          ];
-
           buildInputs = with pkgs; [
             # Go tools.
             delve
@@ -79,16 +47,9 @@
             wabt
           ];
 
-          inherit (openai-sdk) yarnOfflineCache;
-
           shellHook = ''
-            echo "OpenAI JS SDK with TEE/WASM Development Environment"
-            echo "======================================================"
-            echo ""
-            echo "Go version: $(go version)"
-            echo "Node version: $(node --version)"
-            echo "Yarn version: $(yarn --version)"
-            echo ""
+            # Install JS dependencies locally.
+            yarn install
 
             # Set GOPATH if not already set.
             export GOPATH="''${GOPATH:-$HOME/go}"
@@ -97,7 +58,15 @@
             # Ensure WASM builds by default.
             export GOOS=js
             export GOARCH=wasm
+
+            echo "OpenAI JS SDK with TEE/WASM Development Environment"
+            echo "======================================================"
             echo ""
+            echo "Go version: $(go version)"
+            echo "Node version: $(node --version)"
+            echo "Yarn version: $(yarn --version)"
+            echo ""
+
           '';
         };
       }
