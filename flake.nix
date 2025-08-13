@@ -58,8 +58,48 @@
           };
         };
 
+        # Package for the OpenAI SDK build.
+        openai-sdk = pkgs.stdenv.mkDerivation {
+          pname = "openai-sdk";
+          version = (pkgs.lib.importJSON ./package.json).version;
+
+          src = ./.;
+
+          nativeBuildInputs = [
+            nodejs
+            pkgs.yarn
+            pkgs.yarnConfigHook
+          ];
+
+          yarnOfflineCache = pkgs.fetchYarnDeps {
+            yarnLock = ./yarn.lock;
+            hash = "sha256-25mD6XBvrzH4Wt20s65bNITjPGdgG9xOx3hUAVea0yQ=";
+          };
+
+          buildPhase = ''
+            runHook preBuild
+
+            # Run the build script.
+            yarn build
+
+            runHook postBuild
+          '';
+
+          installPhase = ''
+            runHook preInstall
+
+            # Copy the built dist directory to output.
+            mkdir -p $out
+            cp -r dist/* $out/
+
+            runHook postInstall
+          '';
+        };
+
       in
       {
+        packages.default = openai-sdk;
+
         formatter = treefmtEval.config.build.wrapper;
         checks.formatting = treefmtEval.config.build.check self;
 
