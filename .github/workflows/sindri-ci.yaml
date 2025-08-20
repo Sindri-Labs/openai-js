@@ -31,13 +31,13 @@ jobs:
       - name: Run JS linting
         run: |
           echo "Linting disabled, upstream doesn't pass."
-          # yarn lint
+          # nix develop --command yarn lint
 
       - name: Run flake checks
         run: nix flake check
 
       - name: Build the package
-        run: nix build
+        run: nix develop --command yarn lint nix build
 
       - name: Verify build outputs exist
         run: |
