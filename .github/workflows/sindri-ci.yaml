@@ -7,8 +7,8 @@ on:
     branches: [master]
 
 jobs:
-  lint:
-    name: lint
+  lint-and-build:
+    name: lint and build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -21,18 +21,6 @@ jobs:
 
       - name: Run flake checks
         run: nix flake check
-
-  build:
-    name: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@v27
-        with:
-          github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build the package
         run: nix build
