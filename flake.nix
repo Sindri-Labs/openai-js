@@ -24,6 +24,7 @@
 
         go = pkgs.go_1_24;
         nodejs = pkgs.nodejs_22;
+        inherit (pkgs) tinygo;
 
         # Treefmt config.
         treefmtEval = treefmt-nix.lib.evalModule pkgs {
@@ -61,15 +62,16 @@
         # Package for the OpenAI SDK build.
         openai-sdk = pkgs.stdenv.mkDerivation {
           pname = "openai-sdk";
-          version = (pkgs.lib.importJSON ./package.json).version;
+          inherit ((pkgs.lib.importJSON ./package.json)) version;
 
           src = pkgs.lib.cleanSourceWith {
             src = ./.;
-            filter = path: type: true;
+            filter = _path: _type: true;
           };
 
           nativeBuildInputs = [
             go
+            tinygo
             nodejs
             pkgs.yarn
             pkgs.yarnConfigHook
@@ -86,13 +88,13 @@
             # Run the TypeScript build.
             yarn build
 
-            # Build the Go WASM module.
+            # Build the Go WASM module with TinyGo.
             export HOME=$TMPDIR
             export GOCACHE=$TMPDIR/go-cache
             export GOPATH=$TMPDIR/go
 
             pushd go
-            GOOS=js GOARCH=wasm go build -o main.wasm main.go
+            tinygo build -o main.wasm -target wasm main.go
             popd
 
             runHook postBuild
@@ -105,11 +107,47 @@
             mkdir -p $out
             cp -r dist/* $out/
 
-            # Add WASM module and support files to sindri/wasm directory.
+            # Process WASM module and support files for sindri/wasm directory.
             mkdir -p $out/sindri/wasm
-            cp go/main.wasm $out/sindri/wasm/
-            cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" $out/sindri/wasm/
-            cp "$(go env GOROOT)/lib/wasm/wasm_exec_node.js" $out/sindri/wasm/
+
+            # Generate base64 of WASM.
+            WASM_BASE64=$(base64 -w0 go/main.wasm)
+
+            # Create ES module version (wasm.mjs).
+            cat > $out/sindri/wasm/wasm.mjs << EOF
+            // Auto-generated file containing the WASM module as base64.
+            export const WASM_BASE64 = '$WASM_BASE64';
+
+            export function getWasmBytes() {
+              const binaryString = atob(WASM_BASE64);
+              const bytes = new Uint8Array(binaryString.length);
+              for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+              }
+              return bytes;
+            }
+            EOF
+
+            # Create CommonJS version (wasm.js).
+            cat > $out/sindri/wasm/wasm.js << EOF
+            // Auto-generated file containing the WASM module as base64.
+            const WASM_BASE64 = '$WASM_BASE64';
+
+            function getWasmBytes() {
+              const binaryString = atob(WASM_BASE64);
+              const bytes = new Uint8Array(binaryString.length);
+              for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+              }
+              return bytes;
+            }
+
+            module.exports = { WASM_BASE64, getWasmBytes };
+            EOF
+
+            # Copy TinyGo's wasm_exec.js as both .js and .mjs.
+            cp "${tinygo}/share/tinygo/targets/wasm_exec.js" $out/sindri/wasm/wasm_exec.js
+            cp "${tinygo}/share/tinygo/targets/wasm_exec.js" $out/sindri/wasm/wasm_exec.mjs
 
             runHook postInstall
           '';
@@ -132,6 +170,7 @@
             gofumpt
             golangci-lint
             gopls
+            tinygo
 
             # Node tools.
             nodejs
