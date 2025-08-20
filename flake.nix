@@ -70,6 +70,7 @@
           };
 
           nativeBuildInputs = [
+            pkgs.bash
             go
             tinygo
             nodejs
