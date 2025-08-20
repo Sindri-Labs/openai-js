@@ -38,25 +38,6 @@
           programs.nixfmt.enable = true;
           programs.deadnix.enable = true;
           programs.statix.enable = true;
-
-          # Node formatters.
-          settings.formatter.eslint = {
-            command = "${pkgs.eslint}/bin/eslint";
-            options = [
-              "--fix"
-              "--quiet"
-            ];
-            includes = [
-              "*.js"
-              "*.jsx"
-              "*.ts"
-              "*.tsx"
-              "*.mjs"
-              "*.cjs"
-              "*.mts"
-              "*.cts"
-            ];
-          };
         };
 
         # Package for the OpenAI SDK build.

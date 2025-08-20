@@ -20,13 +20,16 @@ jobs:
           node-version: '22'
           cache: 'yarn'
 
-      - name: Install dependencies
-        run: yarn install
-
       - name: Install Nix
         uses: cachix/install-nix-action@c134e4c9e34bac6cab09cf239815f9339aaaf84e # v31
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install dependencies
+        run: yarn install
+
+      - name: Run JS linting
+        run: yarn lint
 
       - name: Run flake checks
         run: nix flake check
