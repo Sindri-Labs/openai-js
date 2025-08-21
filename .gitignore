@@ -12,3 +12,10 @@ tmp
 ecosystem-tests/deno/package.json
 ecosystem-tests/*/openai.tgz
 .dev.vars
+
+
+# Sindri Additions.
+.direnv/
+*.wasm
+logs/
+result

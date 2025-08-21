@@ -1,7 +1,7 @@
 {
   "name": "openai",
   "version": "5.12.2",
-  "description": "The official TypeScript library for the OpenAI API",
+  "description": "Sindri OpenAI-Compatible JS SDK",
   "author": "OpenAI <support@openai.com>",
   "types": "dist/index.d.ts",
   "main": "dist/index.js",
