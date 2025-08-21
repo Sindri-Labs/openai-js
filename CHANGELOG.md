@@ -1,5 +1,49 @@
 # Changelog
 
+## 5.14.0 (2025-08-20)
+
+Full Changelog: [v5.13.1...v5.14.0](https://github.com/openai/openai-node/compare/v5.13.1...v5.14.0)
+
+### Features
+
+* **mcp:** add code execution tool ([3f8264c](https://github.com/openai/openai-node/commit/3f8264cfaafb8d03aedabe53a0d17a7e3dc326d8))
+
+
+### Chores
+
+* **internal/ci:** setup breaking change detection ([87e8004](https://github.com/openai/openai-node/commit/87e8004d05eb27d14a11d433239af525c9c493b9))
+
+## 5.13.1 (2025-08-19)
+
+Full Changelog: [v5.13.0...v5.13.1](https://github.com/openai/openai-node/compare/v5.13.0...v5.13.1)
+
+### Chores
+
+* **api:** accurately represent shape for verbosity on Chat Completions ([5ddac3c](https://github.com/openai/openai-node/commit/5ddac3c7535e2df4b562fe1237b639e112bf5eef))
+
+## 5.13.0 (2025-08-18)
+
+Full Changelog: [v5.12.3...v5.13.0](https://github.com/openai/openai-node/compare/v5.12.3...v5.13.0)
+
+### Features
+
+* **api:** add new text parameters, expiration options ([499179c](https://github.com/openai/openai-node/commit/499179c095eae77dcccec5e2758ab72c8d829ea7))
+
+
+### Chores
+
+* **deps:** update dependency @types/node to v20.17.58 ([7812d0d](https://github.com/openai/openai-node/commit/7812d0db43309144cb46714a64fe97a3e12f5b04))
+* **internal:** formatting change ([56b2073](https://github.com/openai/openai-node/commit/56b2073ac3553d6b9cca1185fe52a7e697d0b733))
+
+## 5.12.3 (2025-08-12)
+
+Full Changelog: [v5.12.2...v5.12.3](https://github.com/openai/openai-node/compare/v5.12.2...v5.12.3)
+
+### Chores
+
+* **internal:** update comment in script ([2488faf](https://github.com/openai/openai-node/commit/2488faf387da1c9bd7565d4bb5aded7bb53b8799))
+* update @stainless-api/prism-cli to v5.15.0 ([db44a7d](https://github.com/openai/openai-node/commit/db44a7d2afa4e0330f4981c106f9abf2fd4ab432))
+
 ## 5.12.2 (2025-08-08)
 
 Full Changelog: [v5.12.1...v5.12.2](https://github.com/openai/openai-node/compare/v5.12.1...v5.12.2)
