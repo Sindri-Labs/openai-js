@@ -67,6 +67,9 @@
           buildPhase = ''
             runHook preBuild
 
+            # Patch shebangs in scripts to use correct bash path.
+            patchShebangs scripts/
+
             # Run the TypeScript build.
             yarn build
 

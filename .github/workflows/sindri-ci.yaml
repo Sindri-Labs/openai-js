@@ -37,7 +37,7 @@ jobs:
         run: nix flake check
 
       - name: Build the package
-        run: nix develop --command nix build
+        run: nix build
 
       - name: Verify build outputs exist
         run: |
