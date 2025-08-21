@@ -24,3 +24,4 @@ export {
 } from './core/error';
 
 export { AzureOpenAI } from './azure';
+export { SindriTEE } from './sindri/index';
