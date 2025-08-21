@@ -26,12 +26,14 @@ jobs:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install dependencies
-        run: yarn install
+        run: |
+          yarn install
+          cd examples
+          yarn install
 
       - name: Run JS linting
         run: |
-          echo "Linting disabled, upstream doesn't pass."
-          # nix develop --command yarn lint
+          nix develop --command yarn lint
 
       - name: Run flake checks
         run: nix flake check
