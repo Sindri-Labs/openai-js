@@ -20,11 +20,45 @@
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
+        # Overlay to patch Go to always use Fetch API in WASM
+        goWasmFetchOverlay = final: prev: {
+          go_1_24 = prev.go_1_24.overrideAttrs (oldAttrs: {
+            patches = (oldAttrs.patches or [ ]) ++ [
+              (final.writeText "go-wasm-always-use-fetch.patch" ''
+                --- a/src/net/http/roundtrip_js.go
+                +++ b/src/net/http/roundtrip_js.go
+                @@ -13,7 +13,6 @@ import (
+                 	"io"
+                 	"net/http/internal/ascii"
+                 	"strconv"
+                -	"strings"
+                 	"syscall/js"
+                 )
+                 
+                @@ -56,8 +55,8 @@ var jsFetchMissing = js.Global().Get("fetch").IsUndefined()
+                 //
+                 // TODO(go.dev/issue/60810): See if it's viable to test the Fetch API
+                 // code path.
+                -var jsFetchDisabled = js.Global().Get("process").Type() == js.TypeObject &&
+                -	strings.HasPrefix(js.Global().Get("process").Get("argv0").String(), "node")
+                +// Patched to always use Fetch API for better WASM compatibility in Node.js
+                +var jsFetchDisabled = false
+                 
+                 // RoundTrip implements the [RoundTripper] interface using the WHATWG Fetch API.
+                 func (t *Transport) RoundTrip(req *Request) (*Response, error) {
+              '')
+            ];
+          });
+        };
+
+        # Apply overlay to get patched Go
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [ goWasmFetchOverlay ];
+        };
 
         go = pkgs.go_1_24;
         nodejs = pkgs.nodejs_22;
-        inherit (pkgs) tinygo;
 
         # Treefmt config.
         treefmtEval = treefmt-nix.lib.evalModule pkgs {
@@ -53,7 +87,6 @@
           nativeBuildInputs = [
             pkgs.bash
             go
-            tinygo
             nodejs
             pkgs.yarn
             pkgs.yarnConfigHook
@@ -61,7 +94,7 @@
 
           yarnOfflineCache = pkgs.fetchYarnDeps {
             yarnLock = ./yarn.lock;
-            hash = "sha256-25mD6XBvrzH4Wt20s65bNITjPGdgG9xOx3hUAVea0yQ=";
+            hash = "sha256-8LxXXALIlx/ThTLTTsMmgtp4BypveV7cBh7eroZnUUo=";
           };
 
           buildPhase = ''
@@ -73,13 +106,15 @@
             # Run the TypeScript build.
             yarn build
 
-            # Build the Go WASM module with TinyGo.
+            # Build the Go WASM module with standard Go compiler.
             export HOME=$TMPDIR
             export GOCACHE=$TMPDIR/go-cache
             export GOPATH=$TMPDIR/go
+            export GOOS=js
+            export GOARCH=wasm
 
             pushd go
-            tinygo build -o main.wasm -target wasm main.go
+            go build -o main.wasm main.go
             popd
 
             runHook postBuild
@@ -130,9 +165,9 @@
             module.exports = { WASM_BASE64, getWasmBytes };
             EOF
 
-            # Copy TinyGo's wasm_exec.js as both .js and .mjs.
-            cp "${tinygo}/share/tinygo/targets/wasm_exec.js" $out/sindri/wasm/wasm_exec.js
-            cp "${tinygo}/share/tinygo/targets/wasm_exec.js" $out/sindri/wasm/wasm_exec.mjs
+            # Copy standard Go's wasm_exec.js as both .js and .mjs.
+            cp "${go}/share/go/lib/wasm/wasm_exec.js" $out/sindri/wasm/wasm_exec.js
+            cp "${go}/share/go/lib/wasm/wasm_exec.js" $out/sindri/wasm/wasm_exec.mjs
 
             runHook postInstall
           '';
@@ -155,7 +190,6 @@
             gofumpt
             golangci-lint
             gopls
-            tinygo
 
             # Node tools.
             nodejs
