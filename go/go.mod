@@ -26,6 +26,4 @@ require (
 	google.golang.org/protobuf v1.36.5 // indirect
 )
 
-replace github.com/Sindri-Labs/evllm-proxy => ../evllm-proxy
-
 replace github.com/google/logger => ./stub_logger

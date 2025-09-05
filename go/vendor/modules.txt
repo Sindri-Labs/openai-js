@@ -1,4 +1,4 @@
-# github.com/Sindri-Labs/evllm-proxy v0.0.9-0.20250818153054-136ede3114b7 => /Users/sangaline/workspaces/evllm-proxy
+# github.com/Sindri-Labs/evllm-proxy v0.0.9-0.20250818153054-136ede3114b7
 ## explicit; go 1.24.2
 github.com/Sindri-Labs/evllm-proxy/pkg/sindriclient
 github.com/Sindri-Labs/evllm-proxy/pkg/sindriclient/attestation
@@ -120,5 +120,4 @@ google.golang.org/protobuf/reflect/protoreflect
 google.golang.org/protobuf/reflect/protoregistry
 google.golang.org/protobuf/runtime/protoiface
 google.golang.org/protobuf/runtime/protoimpl
-# github.com/Sindri-Labs/evllm-proxy => /Users/sangaline/workspaces/evllm-proxy
 # github.com/google/logger => ./stub_logger
