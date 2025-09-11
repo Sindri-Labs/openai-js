@@ -25,3 +25,4 @@ export {
 
 export { AzureOpenAI } from './azure';
 export { SindriTEE } from './sindri/index';
+export type { SindriTEEConfig, SindriClientConfig } from './sindri/types';

@@ -4,84 +4,29 @@
  */
 
 import type { OpenAI } from '../client';
+import type { SindriTEEConfig, SindriClientConfig, EncryptionConfig } from './types';
 
-// Type definitions for the WASM module functions.
+// Type definitions for the WASM module functions matching the new Go interface.
 interface SindriWASMFunctions {
-  sindri_initializeKeys: (useEphemeral: boolean, privateKeyPEM?: string, publicKeyPEM?: string, debug?: boolean) => {
+  sindri_initialize: (configJSON: string) => {
     success?: boolean;
-    publicKey?: string;
-    error?: string;
-  };
-  sindri_getPublicKey: () => {
-    publicKey?: string;
-    error?: string;
-  };
-  sindri_setServerPublicKey: (publicKeyPEM: string) => {
-    success?: boolean;
-    error?: string;
-  };
-  sindri_setCredentials: (apiKey: string, baseURL: string) => {
-    success?: boolean;
-    error?: string;
-  };
-  sindri_generateKeyPair: () => {
-    publicKey?: string;
-    privateKey?: string;
-    error?: string;
-  };
-  sindri_generateKeyPairPEM: () => {
-    publicKeyPEM?: string;
-    privateKeyPEM?: string;
-    error?: string;
-  };
-  sindri_encryptMessage: (message: string) => {
-    encrypted?: string;
-    error?: string;
-  };
-  sindri_decryptMessage: (encrypted: string) => {
-    decrypted?: string;
-    error?: string;
-  };
-  sindri_encryptBundle: (bundle: string) => {
-    encrypted?: string;
-    publicKey?: string;
+    message?: string;
     error?: string;
   };
   sindri_chatCompletion: (requestBody: string) => Promise<{
     response?: string;
-    encrypted?: boolean;
     status?: number;
     error?: string;
   }>;
-  sindri_fetchAttestation: () => Promise<{
-    attestation: any;
-    serverPublicKey?: string;
-    status: number;
-  }>;
-}
-
-export interface SindriConfig {
-  // Enable TEE integration.
-  enabled?: boolean;
-  // Base URL for Sindri API.
-  baseURL?: string;
-  // API key for authentication.
-  apiKey?: string;
-  // Enable encryption for requests.
-  encryptionEnabled?: boolean;
-  // Use ephemeral keys (recommended).
-  useEphemeralKeys?: boolean;
-  // Static keys if not using ephemeral.
-  privateKeyPEM?: string;
-  publicKeyPEM?: string;
-  // Server public key from attestation.
-  serverPublicKey?: string;
-  // Debug mode.
-  debug?: boolean;
-  // Log level.
-  logLevel?: 'debug' | 'info' | 'warn' | 'error';
-  // Attestation validity period in minutes.
-  attestationValidityMinutes?: number;
+  sindri_getServerPublicKey: () => {
+    publicKey?: string;
+    error?: string;
+  };
+  sindri_exportPublicKey: () => {
+    message?: string;
+    publicKey?: string;
+    error?: string;
+  };
 }
 
 /**
@@ -92,34 +37,56 @@ export class SindriTEE {
   private static initialized = false;
   private static goInstance: any = null;
   private static wasmFunctions: SindriWASMFunctions | null = null;
-  private static config: SindriConfig = {};
+  private static config: SindriTEEConfig | null = null;
 
   /**
-   * Initialize the TEE module.
+   * Initialize the TEE module with evllm-proxy configuration.
    */
-  static async initialize(config: SindriConfig = {}): Promise<void> {
+  static async initialize(config: Partial<SindriTEEConfig> = {}): Promise<void> {
     if (this.initialized) {
       return;
     }
 
-    // Set default values.
-    this.config = {
-      enabled: true,
-      baseURL: 'https://sindri.app/api/ai/v1/openai',
-      apiKey: process.env['OPENAI_API_KEY'] || '',
-      encryptionEnabled: true,
-      useEphemeralKeys: true,
-      attestationValidityMinutes: 60,
-      logLevel: 'info',
-      ...config,
+    // Build complete configuration with defaults inline.
+    const fullConfig: SindriTEEConfig = {
+      // Required fields with environment fallbacks.
+      baseURL: config.baseURL || process.env['SINDRI_BASE_URL'] || (process.env['SINDRI_API_KEY'] || process.env['OPENAI_API_KEY'] ? 'https://sindri.app/api/ai/v1/openai' : ''),
+      apiKey: config.apiKey || process.env['SINDRI_API_KEY'] || process.env['OPENAI_API_KEY'] || '',
+
+      // Optional fields with defaults.
+      requestTimeoutSeconds: config.requestTimeoutSeconds ?? 300,
+      ...(config.logLevel && { logLevel: config.logLevel }),
+
+      // TEE-specific settings.
+      enabled: config.enabled !== false,
+      debug: config.debug === true,
+
+      // Encryption configuration with defaults.
+      encryption: {
+        enabled: config.encryption?.enabled ?? true,
+        keySource: config.encryption?.keySource ?? 'ephemeral',
+        ...(config.encryption?.privateKey && { privateKey: config.encryption.privateKey }),
+        ...(config.encryption?.publicKey && { publicKey: config.encryption.publicKey }),
+        attestation: {
+          validityPeriodMinutes: config.encryption?.attestation?.validityPeriodMinutes ?? 60,
+          renewalThresholdSeconds: config.encryption?.attestation?.renewalThresholdSeconds ?? 30,
+          verifyRegisters: config.encryption?.attestation?.verifyRegisters ?? false,
+          ...(config.encryption?.attestation?.approvedMeasurements && {
+            approvedMeasurements: config.encryption.attestation.approvedMeasurements,
+          }),
+        },
+      },
     };
+
+    // Store configuration.
+    this.config = fullConfig;
 
     try {
       await this.loadWASM();
-      await this.setupEncryption();
+      await this.initializeWASM();
       this.initialized = true;
 
-      if (this.config.debug) {
+      if (this.config?.debug) {
         console.log('SindriTEE initialized successfully');
       }
     } catch (error) {
@@ -152,71 +119,51 @@ export class SindriTEE {
     // Instantiate the WASM module.
     const wasmResult = await (globalThis as any).WebAssembly.instantiate(
       wasmBytes,
-      this.goInstance.importObject
+      this.goInstance.importObject,
     );
 
     // Run the Go program.
     this.goInstance.run(wasmResult.instance);
 
     // Wait for the module to initialize.
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await new Promise((resolve) => setTimeout(resolve, 100));
 
     // Check if Sindri functions are available.
     const global = globalThis as any;
-    if (typeof global.sindri_initializeKeys === 'function') {
+    if (typeof global.sindri_initialize === 'function') {
       this.wasmFunctions = {
-        sindri_initializeKeys: global.sindri_initializeKeys,
-        sindri_getPublicKey: global.sindri_getPublicKey,
-        sindri_setServerPublicKey: global.sindri_setServerPublicKey,
-        sindri_setCredentials: global.sindri_setCredentials,
-        sindri_generateKeyPair: global.sindri_generateKeyPair,
-        sindri_generateKeyPairPEM: global.sindri_generateKeyPairPEM,
-        sindri_encryptMessage: global.sindri_encryptMessage,
-        sindri_decryptMessage: global.sindri_decryptMessage,
-        sindri_encryptBundle: global.sindri_encryptBundle,
+        sindri_initialize: global.sindri_initialize,
         sindri_chatCompletion: global.sindri_chatCompletion,
-        sindri_fetchAttestation: global.sindri_fetchAttestation,
+        sindri_getServerPublicKey: global.sindri_getServerPublicKey,
+        sindri_exportPublicKey: global.sindri_exportPublicKey,
       };
 
-      if (this.config.debug) {
-        console.log('WASM encryption functions loaded successfully');
+      if (this.config?.debug) {
+        console.log('WASM functions loaded successfully');
       }
     } else {
-      throw new Error('WASM encryption functions not found');
+      throw new Error('WASM functions not found');
     }
   }
 
   /**
-   * Setup encryption keys.
+   * Initialize the WASM module with configuration.
    */
-  private static async setupEncryption(): Promise<void> {
-    if (!this.wasmFunctions || !this.config.encryptionEnabled) {
+  private static async initializeWASM(): Promise<void> {
+    if (!this.wasmFunctions) {
       return;
     }
 
-    // Initialize keys.
-    const useEphemeral = this.config.useEphemeralKeys !== false; // Default to ephemeral.
-    const result = this.wasmFunctions.sindri_initializeKeys(
-      useEphemeral,
-      this.config.privateKeyPEM,
-      this.config.publicKeyPEM,
-      this.config.debug === true // Pass debug flag
-    );
+    // Pass the full configuration to the WASM module.
+    const configJSON = JSON.stringify(this.config);
+    const result = this.wasmFunctions.sindri_initialize(configJSON);
 
     if (result.error) {
-      throw new Error(`Failed to initialize keys: ${result.error}`);
+      throw new Error(`Failed to initialize WASM module: ${result.error}`);
     }
 
-    if (this.config.debug && result.publicKey) {
-      console.log('Client public key:', result.publicKey);
-    }
-
-    // Set server public key if provided.
-    if (this.config.serverPublicKey) {
-      const serverResult = this.wasmFunctions.sindri_setServerPublicKey(this.config.serverPublicKey);
-      if (serverResult.error) {
-        throw new Error(`Failed to set server public key: ${serverResult.error}`);
-      }
+    if (this.config?.debug && result.message) {
+      console.log('WASM initialization:', result.message);
     }
   }
 
@@ -231,144 +178,31 @@ export class SindriTEE {
    * Check if encryption is enabled.
    */
   static isEncryptionEnabled(): boolean {
-    return this.initialized && this.config.encryptionEnabled === true;
+    return this.initialized && this.config?.encryption?.enabled === true;
   }
 
   /**
-   * Get the client public key.
+   * Get the server's public key if available.
    */
-  static getPublicKey(): string | null {
+  static getServerPublicKey(): string | null {
     if (!this.wasmFunctions) {
       return null;
     }
 
-    const result = this.wasmFunctions.sindri_getPublicKey();
+    const result = this.wasmFunctions.sindri_getServerPublicKey();
     return result.publicKey || null;
   }
 
   /**
-   * Set the server public key from attestation.
+   * Export the client's public key (mainly for debugging).
    */
-  static setServerPublicKey(publicKeyPEM: string): void {
+  static exportPublicKey(): string | null {
     if (!this.wasmFunctions) {
-      throw new Error('SindriTEE not initialized');
+      return null;
     }
 
-    const result = this.wasmFunctions.sindri_setServerPublicKey(publicKeyPEM);
-    if (result.error) {
-      throw new Error(`Failed to set server public key: ${result.error}`);
-    }
-  }
-
-  /**
-   * Encrypt a message for the server.
-   */
-  static encryptMessage(message: string): string {
-    if (!this.wasmFunctions) {
-      throw new Error('SindriTEE not initialized');
-    }
-
-    const result = this.wasmFunctions.sindri_encryptMessage(message);
-    if (result.error) {
-      throw new Error(`Failed to encrypt message: ${result.error}`);
-    }
-
-    return result.encrypted!;
-  }
-
-  /**
-   * Decrypt a message from the server.
-   */
-  static decryptMessage(encrypted: string): string {
-    if (!this.wasmFunctions) {
-      throw new Error('SindriTEE not initialized');
-    }
-
-    const result = this.wasmFunctions.sindri_decryptMessage(encrypted);
-    if (result.error) {
-      throw new Error(`Failed to decrypt message: ${result.error}`);
-    }
-
-    return result.decrypted!;
-  }
-
-  /**
-   * Encrypt a bundle with ephemeral keys.
-   */
-  static encryptBundle(bundle: string): { encrypted: string; publicKey: string } {
-    if (!this.wasmFunctions) {
-      throw new Error('SindriTEE not initialized');
-    }
-
-    const result = this.wasmFunctions.sindri_encryptBundle(bundle);
-    if (result.error) {
-      throw new Error(`Failed to encrypt bundle: ${result.error}`);
-    }
-
-    return {
-      encrypted: result.encrypted!,
-      publicKey: result.publicKey!,
-    };
-  }
-
-  /**
-   * Intercept and encrypt an OpenAI API request.
-   */
-  static async encryptRequest(body: any): Promise<any> {
-    if (!this.isEncryptionEnabled()) {
-      return body; // Pass through unencrypted.
-    }
-
-    try {
-      const bodyStr = JSON.stringify(body);
-      const encrypted = this.encryptMessage(bodyStr);
-      
-      return {
-        encrypted: encrypted,
-        publicKey: this.getPublicKey(),
-      };
-    } catch (error) {
-      if (this.config.debug) {
-        console.error('Failed to encrypt request:', error);
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * Intercept and decrypt an OpenAI API response.
-   */
-  static async decryptResponse(response: any): Promise<any> {
-    if (!this.isEncryptionEnabled()) {
-      return response; // Pass through unencrypted.
-    }
-
-    try {
-      if (response.encrypted) {
-        const decrypted = this.decryptMessage(response.encrypted);
-        return JSON.parse(decrypted);
-      }
-      return response;
-    } catch (error) {
-      if (this.config.debug) {
-        console.error('Failed to decrypt response:', error);
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * Set API credentials for direct WASM requests.
-   */
-  static setCredentials(apiKey: string, baseURL: string): void {
-    if (!this.wasmFunctions) {
-      throw new Error('SindriTEE not initialized');
-    }
-    
-    const result = this.wasmFunctions.sindri_setCredentials(apiKey, baseURL);
-    if (result.error) {
-      throw new Error(`Failed to set credentials: ${result.error}`);
-    }
+    const result = this.wasmFunctions.sindri_exportPublicKey();
+    return result.publicKey || result.message || null;
   }
 
   /**
@@ -381,7 +215,7 @@ export class SindriTEE {
 
     const bodyStr = JSON.stringify(requestBody);
     const result = await this.wasmFunctions.sindri_chatCompletion(bodyStr);
-    
+
     if (result.error) {
       throw new Error(`Chat completion failed: ${result.error}`);
     }
@@ -399,17 +233,85 @@ export class SindriTEE {
 
   /**
    * Update TEE configuration at runtime.
+   * Note: Some changes may require re-initialization.
    */
-  static updateConfig(config: Partial<SindriConfig>): void {
-    this.config = { ...this.config, ...config };
-    
-    // Update WASM configuration if initialized.
+  static updateConfig(config: Partial<SindriTEEConfig>): void {
+    if (!this.config) {
+      // If no existing config, just store the partial config.
+      // Full defaults will be applied on initialize.
+      this.config = config as SindriTEEConfig;
+      return;
+    }
+
+    // Merge with existing configuration.
+    const oldConfig = this.config;
+    this.config = {
+      // Core fields.
+      baseURL: config.baseURL ?? oldConfig.baseURL,
+      apiKey: config.apiKey ?? oldConfig.apiKey,
+      ...(config.requestTimeoutSeconds !== undefined || oldConfig.requestTimeoutSeconds !== undefined
+        ? { requestTimeoutSeconds: config.requestTimeoutSeconds ?? oldConfig.requestTimeoutSeconds }
+        : {}),
+      ...(config.logLevel !== undefined || oldConfig.logLevel !== undefined
+        ? { logLevel: config.logLevel ?? oldConfig.logLevel }
+        : {}),
+
+      // TEE-specific settings.
+      ...(config.enabled !== undefined || oldConfig.enabled !== undefined
+        ? { enabled: config.enabled ?? oldConfig.enabled }
+        : {}),
+      ...(config.debug !== undefined || oldConfig.debug !== undefined
+        ? { debug: config.debug ?? oldConfig.debug }
+        : {}),
+
+      // Merge encryption configuration.
+    };
+
+    // Handle encryption configuration separately to satisfy exactOptionalPropertyTypes
+    if (config.encryption !== undefined || oldConfig.encryption !== undefined) {
+      if (config.encryption) {
+        const encryptionConfig: EncryptionConfig = {
+          enabled: config.encryption.enabled ?? oldConfig.encryption?.enabled ?? true,
+        };
+        
+        // Add optional fields only if they have values
+        const keySource = config.encryption.keySource ?? oldConfig.encryption?.keySource;
+        if (keySource !== undefined) {
+          encryptionConfig.keySource = keySource;
+        }
+        
+        const privateKey = config.encryption.privateKey ?? oldConfig.encryption?.privateKey;
+        if (privateKey !== undefined) {
+          encryptionConfig.privateKey = privateKey;
+        }
+        
+        const publicKey = config.encryption.publicKey ?? oldConfig.encryption?.publicKey;
+        if (publicKey !== undefined) {
+          encryptionConfig.publicKey = publicKey;
+        }
+        
+        // Handle attestation
+        if (config.encryption.attestation || oldConfig.encryption?.attestation) {
+          if (config.encryption.attestation) {
+            encryptionConfig.attestation = {
+              ...oldConfig.encryption?.attestation,
+              ...config.encryption.attestation,
+            };
+          } else if (oldConfig.encryption?.attestation) {
+            encryptionConfig.attestation = oldConfig.encryption.attestation;
+          }
+        }
+        
+        this.config.encryption = encryptionConfig;
+      } else if (oldConfig.encryption) {
+        this.config.encryption = oldConfig.encryption;
+      }
+    }
+
+    // If significant changes, suggest re-initialization.
     if (this.initialized && this.wasmFunctions) {
-      // Update credentials if provided.
-      if (config.apiKey !== undefined || config.baseURL !== undefined) {
-        const apiKey = config.apiKey || this.config.apiKey || '';
-        const baseURL = config.baseURL || this.config.baseURL || '';
-        this.setCredentials(apiKey, baseURL);
+      if (config.encryption !== undefined || config.apiKey !== undefined || config.baseURL !== undefined) {
+        console.warn('Configuration changes may require re-initialization to take effect');
       }
     }
   }
@@ -417,50 +319,54 @@ export class SindriTEE {
   /**
    * Get current TEE configuration.
    */
-  static getConfig(): Readonly<SindriConfig> {
-    return { ...this.config };
+  static getConfig(): Readonly<SindriTEEConfig> | null {
+    return this.config ? { ...this.config } : null;
   }
 
   /**
    * Check if TEE is enabled.
    */
   static isEnabled(): boolean {
-    return this.config.enabled !== false;
+    return this.config?.enabled !== false;
   }
 
   /**
    * Intercept chat completion requests and route through TEE.
+   * The WASM module handles all encryption, attestation, and communication.
    */
-  static async interceptChatCompletion(body: any, options?: any, apiKey?: string, baseURL?: string): Promise<any> {
+  static async interceptChatCompletion(
+    body: any,
+    options?: any,
+    apiKey?: string,
+    baseURL?: string,
+  ): Promise<any> {
     // Check if TEE is enabled.
     if (!this.isEnabled()) {
       return null; // Let the normal flow continue.
     }
-    
-    // Initialize WASM if needed.
+
+    // Initialize WASM if needed with override credentials if provided.
     if (!this.initialized) {
-      await this.initialize();
+      const initConfig: Partial<SindriTEEConfig> = {};
+      if (apiKey) initConfig.apiKey = apiKey;
+      if (baseURL) initConfig.baseURL = baseURL;
+      await this.initialize(initConfig);
     }
-    
-    // Use provided credentials or fall back to config.
-    const finalApiKey = apiKey || this.config.apiKey || process.env['OPENAI_API_KEY'] || '';
-    const finalBaseURL = baseURL || this.config.baseURL || 'https://sindri.app/api/ai/v1/openai';
-    
-    // Set credentials.
-    if (finalApiKey && finalBaseURL) {
-      this.setCredentials(finalApiKey, finalBaseURL);
-    } else {
-      if (this.config.debug) {
+
+    // Check that we have required credentials.
+    if (!this.config?.apiKey || !this.config?.baseURL) {
+      if (this.config?.debug) {
         console.warn('[TEE] Missing API key or base URL for TEE request');
       }
       return null;
     }
-    
+
     try {
       // Call the WASM chat completion function.
+      // The WASM module handles all encryption and attestation internally.
       return await this.chatCompletion(body);
     } catch (error) {
-      if (this.config.debug) {
+      if (this.config?.debug) {
         console.error('[TEE] Chat completion failed:', error);
       }
       throw error;

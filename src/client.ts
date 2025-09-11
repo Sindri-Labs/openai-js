@@ -20,6 +20,7 @@ import * as Uploads from './core/uploads';
 import * as API from './resources/index';
 import { APIPromise } from './core/api-promise';
 import { SindriTEE } from './sindri/index';
+import type { SindriTEEConfig } from './sindri/types';
 import {
   Batch,
   BatchCreateParams,
@@ -420,14 +421,14 @@ export class OpenAI {
   /**
    * Configure TEE (Trusted Execution Environment) settings.
    */
-  configureTEE(config: Parameters<typeof SindriTEE.updateConfig>[0]): void {
+  configureTEE(config: Partial<SindriTEEConfig>): void {
     SindriTEE.updateConfig(config);
   }
 
   /**
    * Get current TEE configuration.
    */
-  getTEEConfig(): ReturnType<typeof SindriTEE.getConfig> {
+  getTEEConfig(): Readonly<SindriTEEConfig> | null {
     return SindriTEE.getConfig();
   }
 
@@ -523,69 +524,9 @@ export class OpenAI {
           const { SindriTEE } = await import('./sindri/index');
           
           if (SindriTEE.isEncryptionEnabled()) {
-            // Check if we have a server public key
-            const publicKey = SindriTEE.getPublicKey();
-            if (!publicKey) {
-              loggerFor(this).debug('Sindri WASM loaded but no client key generated');
-              return;
-            }
-            
-            // Try to get server key (would come from attestation)
-            // For now, skip encryption if no server key
-            try {
-              // Convert body to string if needed
-              let bodyStr: string;
-              if (typeof request.body === 'string') {
-                bodyStr = request.body;
-              } else if (request.body instanceof ArrayBuffer) {
-                const decoder = new TextDecoder();
-                bodyStr = decoder.decode(request.body);
-              } else if (ArrayBuffer.isView(request.body)) {
-                const decoder = new TextDecoder();
-                bodyStr = decoder.decode(request.body);
-              } else {
-                return; // Skip encryption for non-JSON bodies
-              }
-              
-              // Parse to ensure it's JSON
-              try {
-                JSON.parse(bodyStr);
-              } catch {
-                return; // Skip encryption for non-JSON
-              }
-              
-              // Try to encrypt - this will fail if no server key
-              // In production, we'd fetch attestation first to get the server key
-              const encrypted = SindriTEE.encryptMessage(bodyStr);
-              const encryptedPayload = {
-                encrypted: encrypted,
-                publicKey: publicKey,
-              };
-              
-              // Replace request body
-              request.body = JSON.stringify(encryptedPayload);
-              
-              // Add encryption header
-              if (request.headers) {
-                if (request.headers instanceof Headers) {
-                  request.headers.set('x-sindri-encrypted', 'true');
-                } else if (Array.isArray(request.headers)) {
-                  request.headers.push(['x-sindri-encrypted', 'true']);
-                } else {
-                  (request.headers as Record<string, string>)['x-sindri-encrypted'] = 'true';
-                }
-              }
-              
-              loggerFor(this).debug('Request encrypted with Sindri WASM');
-            } catch (encryptError: any) {
-              // If encryption fails (no server key), continue unencrypted
-              if (encryptError.message?.includes('Server public key not set')) {
-                loggerFor(this).debug('No server key from attestation - sending unencrypted');
-                // Continue with original unencrypted request
-              } else {
-                loggerFor(this).warn('Encryption failed:', encryptError);
-              }
-            }
+            // The WASM module handles encryption internally in chatCompletion
+            // We only do manual encryption here for direct API testing
+            loggerFor(this).debug('Sindri encryption is enabled but not used for direct requests');
           }
         } catch (error) {
           loggerFor(this).warn('Failed to encrypt request:', error);
@@ -1082,10 +1023,9 @@ export class OpenAI {
         // Dynamic import to avoid circular dependencies
         const { SindriTEE } = await import('./sindri/index');
         
-        // Initialize with encryption disabled until HPKE is properly implemented
+        // Initialize with default configuration
+        // Encryption will be enabled by default with ephemeral keys
         await SindriTEE.initialize({
-          encryptionEnabled: false,  // Disabled until HPKE implementation is complete
-          useEphemeralKeys: true,
           debug: false,
         });
         
