@@ -5,12 +5,12 @@ go 1.24.2
 toolchain go1.24.5
 
 require (
-	github.com/Sindri-Labs/evllm-proxy v0.0.9-0.20250818153054-136ede3114b7
-	github.com/cloudflare/circl v1.6.1
+	github.com/Sindri-Labs/evllm-proxy v0.0.9-0.20250911215040-5a5f3be5f1ba
 	go.uber.org/zap v1.27.0
 )
 
 require (
+	github.com/cloudflare/circl v1.6.1 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.3 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect

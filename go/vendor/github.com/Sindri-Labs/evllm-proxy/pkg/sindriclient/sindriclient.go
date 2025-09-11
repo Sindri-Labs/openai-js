@@ -75,9 +75,7 @@ func (o *SindriClientOptions) Validate() error {
 		return fmt.Errorf("BaseURL scheme must be http or https, got: %s", parsedURL.Scheme)
 	}
 
-	if o.APIKey == "" {
-		return fmt.Errorf("APIKey is required")
-	}
+	// APIKey is now optional - if not set, will pass through Authorization header
 
 	if o.Logger == nil {
 		return fmt.Errorf("Logger is required")
@@ -144,6 +142,11 @@ func (s *SindriClient) getKeys() (*cryptos.EncryptionKeys, error) {
 // APIKey returns the API key used for authentication.
 func (s *SindriClient) APIKey() string {
 	return s.apiKey
+}
+
+// HasAPIKey returns true if an API key is configured.
+func (s *SindriClient) HasAPIKey() bool {
+	return s.apiKey != ""
 }
 
 // ClientKeys returns the key holder used for encryption.

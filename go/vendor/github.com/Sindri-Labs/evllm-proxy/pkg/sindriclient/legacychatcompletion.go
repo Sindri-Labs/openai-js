@@ -15,21 +15,38 @@ import (
 )
 
 // ChatCompletionNoStream sends a chat completion request to the Sindri API and returns the response.
+// Pass an empty string for endpoint to use the default endpoint.
 func (s *SindriClient) LegacyChatCompletionNoStream(
 	params *cm.LegacyCompletionParams,
 	td *cm.TraceMetadata,
+	authHeader string,
+	endpoint string,
 ) (*cm.LegacyCompletion, error) {
 	slogger := s.logger.Sugar().With("trace_metadata", td)
 
+	headers := map[string]string{
+		"Content-Type": "application/json",
+	}
+
+	// Use configured API key if available, otherwise use passed auth header.
+	if s.apiKey != "" {
+		headers["Authorization"] = "Bearer " + s.apiKey
+	} else if authHeader != "" {
+		headers["Authorization"] = authHeader
+	}
+
+	// Use provided endpoint if available, otherwise use default.
+	url := s.Endpoint(EndpointLegacyCompletion)
+	if endpoint != "" {
+		url = endpoint
+	}
+
 	request := httpclient.HttpRequest{
-		Client: s.httpClient,
-		Logger: slogger,
-		Method: http.MethodPost,
-		URL:    s.Endpoint(EndpointLegacyCompletion),
-		Headers: map[string]string{
-			"Content-Type":  "application/json",
-			"Authorization": "Bearer " + s.apiKey,
-		},
+		Client:  s.httpClient,
+		Logger:  slogger,
+		Method:  http.MethodPost,
+		URL:     url,
+		Headers: headers,
 	}
 
 	var keys *cryptos.EncryptionKeys
@@ -95,21 +112,38 @@ func (s *SindriClient) LegacyChatCompletionNoStream(
 }
 
 // ChatCompletionStream streams chat completion events from the Sindri API.
+// Pass an empty string for endpoint to use the default endpoint.
 func (s *SindriClient) LegacyChatCompletionStream(
 	params *cm.LegacyCompletionParams,
 	meta *cm.TraceMetadata,
+	authHeader string,
+	endpoint string,
 ) (<-chan *cm.LegacyCompletion, <-chan error, error) {
 	slogger := s.logger.Sugar().With("trace_metadata", meta)
 
+	headers := map[string]string{
+		"Content-Type": "application/json",
+	}
+
+	// Use configured API key if available, otherwise use passed auth header.
+	if s.apiKey != "" {
+		headers["Authorization"] = "Bearer " + s.apiKey
+	} else if authHeader != "" {
+		headers["Authorization"] = authHeader
+	}
+
+	// Use provided endpoint if available, otherwise use default.
+	url := s.Endpoint(EndpointLegacyCompletion)
+	if endpoint != "" {
+		url = endpoint
+	}
+
 	request := httpclient.HttpRequest{
-		Client: s.httpClient,
-		Logger: slogger,
-		Method: http.MethodPost,
-		URL:    s.Endpoint(EndpointLegacyCompletion),
-		Headers: map[string]string{
-			"Content-Type":  "application/json",
-			"Authorization": "Bearer " + s.apiKey,
-		},
+		Client:  s.httpClient,
+		Logger:  slogger,
+		Method:  http.MethodPost,
+		URL:     url,
+		Headers: headers,
 	}
 
 	var keys *cryptos.EncryptionKeys
