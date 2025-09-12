@@ -449,32 +449,84 @@ func chatCompletion(this js.Value, args []js.Value) interface{} {
 				"RequestId": fmt.Sprintf("req-%d", time.Now().UnixNano()),
 			}
 
-			// Use the evllm-proxy client with attestation and encryption.
-			// The client already has the correct auth/endpoint from when it was created
-			logger.Info("Calling ChatCompletionNoStream",
-				zap.String("clientApiKey", apiKey[:min(len(apiKey), 20)]), // Log first 20 chars safely
-				zap.String("clientBaseURL", baseURL),
-			)
-			completion, err := client.ChatCompletionNoStream(&params, &td)
-			if err != nil {
-				if logger != nil {
-					logger.Error("Chat completion failed", zap.Error(err))
+			// Check if streaming is requested.
+			if params.Stream {
+				// Handle streaming request.
+				logger.Info("Calling ChatCompletionStream",
+					zap.String("clientApiKey", apiKey[:min(len(apiKey), 20)]), // Log first 20 chars safely
+					zap.String("clientBaseURL", baseURL),
+				)
+
+				// Get streaming channels.
+				chunksChan, errChan, err := client.ChatCompletionStream(&params, &td)
+				if err != nil {
+					if logger != nil {
+						logger.Error("Chat completion stream failed to start", zap.Error(err))
+					}
+					reject.Invoke(fmt.Sprintf("Chat completion stream failed: %v", err))
+					return
 				}
-				reject.Invoke(fmt.Sprintf("Chat completion failed: %v", err))
-				return
-			}
 
-			// Convert response to JSON.
-			responseJSON, err := json.Marshal(completion)
-			if err != nil {
-				reject.Invoke(fmt.Sprintf("Failed to marshal response: %v", err))
-				return
-			}
+				// Create a JavaScript array to collect chunks.
+				chunks := js.Global().Get("Array").New()
+				chunkIndex := 0
 
-			resolve.Invoke(map[string]interface{}{
-				"response": string(responseJSON),
-				"status":   200,
-			})
+				// Read from channels and collect chunks.
+				for {
+					select {
+					case chunk, ok := <-chunksChan:
+						if !ok {
+							// Stream completed successfully.
+							result := map[string]interface{}{
+								"stream": true,
+								"chunks": chunks,
+							}
+							resolve.Invoke(result)
+							return
+						}
+						// Convert chunk to JSON and add to array.
+						chunkJSON, err := json.Marshal(chunk)
+						if err != nil {
+							logger.Error("Failed to marshal chunk", zap.Error(err))
+							continue
+						}
+						chunks.SetIndex(chunkIndex, string(chunkJSON))
+						chunkIndex++
+					case err := <-errChan:
+						if err != nil {
+							logger.Error("Stream error", zap.Error(err))
+							reject.Invoke(fmt.Sprintf("Stream error: %v", err))
+							return
+						}
+					}
+				}
+			} else {
+				// Handle non-streaming request.
+				logger.Info("Calling ChatCompletionNoStream",
+					zap.String("clientApiKey", apiKey[:min(len(apiKey), 20)]), // Log first 20 chars safely
+					zap.String("clientBaseURL", baseURL),
+				)
+				completion, err := client.ChatCompletionNoStream(&params, &td)
+				if err != nil {
+					if logger != nil {
+						logger.Error("Chat completion failed", zap.Error(err))
+					}
+					reject.Invoke(fmt.Sprintf("Chat completion failed: %v", err))
+					return
+				}
+
+				// Convert response to JSON.
+				responseJSON, err := json.Marshal(completion)
+				if err != nil {
+					reject.Invoke(fmt.Sprintf("Failed to marshal response: %v", err))
+					return
+				}
+
+				resolve.Invoke(map[string]interface{}{
+					"response": string(responseJSON),
+					"status":   200,
+				})
+			}
 		}()
 
 		return nil

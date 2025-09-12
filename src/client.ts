@@ -353,7 +353,7 @@ export class OpenAI {
     // Default to Sindri TEE endpoint if OPENAI_USE_TEE is not false.
     const useTEE = process.env['OPENAI_USE_TEE'] !== 'false';
     const defaultBaseURL = useTEE ? SINDRI_BASE_URL : 'https://api.openai.com/v1';
-    
+
     const options: ClientOptions = {
       apiKey,
       organization,
@@ -371,7 +371,7 @@ export class OpenAI {
 
     this.baseURL = options.baseURL!;
     this.timeout = options.timeout ?? OpenAI.DEFAULT_TIMEOUT /* 10 minutes */;
-    
+
     // Auto-detect Sindri endpoints and initialize WASM encryption.
     if (isSindriEndpoint(this.baseURL)) {
       this.initializeSindriWASM();
@@ -479,14 +479,17 @@ export class OpenAI {
     defaultBaseURL?: string | undefined,
   ): string {
     const baseURL = (!this.#baseURLOverridden() && defaultBaseURL) || this.baseURL;
-    
+
     // Sindri endpoints already have /v1 in their base URL, no need to add it
     let adjustedPath = path;
-    
+
     const url =
       isAbsoluteURL(adjustedPath) ?
         new URL(adjustedPath)
-      : new URL(baseURL + (baseURL.endsWith('/') && adjustedPath.startsWith('/') ? adjustedPath.slice(1) : adjustedPath));
+      : new URL(
+          baseURL +
+            (baseURL.endsWith('/') && adjustedPath.startsWith('/') ? adjustedPath.slice(1) : adjustedPath),
+        );
 
     const defaultQuery = this.defaultQuery();
     if (!isEmptyObj(defaultQuery)) {
@@ -518,12 +521,12 @@ export class OpenAI {
     // Handle Sindri encryption if needed
     if (isSindriEndpoint(url)) {
       await this.ensureSindriInitialized();
-      
+
       if (this.sindriInitialized && request.body) {
         try {
           // Dynamic import to avoid circular dependencies
           const { SindriTEE } = await import('./sindri/index');
-          
+
           if (SindriTEE.isEncryptionEnabled()) {
             // The WASM module handles encryption internally in chatCompletion
             // We only do manual encryption here for direct API testing
@@ -591,26 +594,68 @@ export class OpenAI {
     if (options.path === '/chat/completions' && options.method === 'post') {
       try {
         const teeResponse = await SindriTEE.interceptChatCompletion(
-          options.body, 
+          options.body,
           options,
           this.apiKey,
-          this.baseURL
+          this.baseURL,
         );
         if (teeResponse) {
-          // TEE handled the request, return the response directly.
-          const response = new Response(JSON.stringify(teeResponse), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          });
-          const requestLogID = 'tee_' + ((Math.random() * (1 << 24)) | 0).toString(16).padStart(6, '0');
-          return {
-            response,
-            options,
-            controller: new AbortController(),
-            requestLogID,
-            retryOfRequestLogID: retryOfRequestLogID,
-            startTime: Date.now(),
-          };
+          // Check if this is a streaming response
+          if (teeResponse.__tee_stream && teeResponse.chunks) {
+            // Create a ReadableStream for streaming response
+            const encoder = new TextEncoder();
+            const stream = new ReadableStream({
+              start(controller) {
+                // Process each chunk
+                for (const chunkStr of teeResponse.chunks) {
+                  try {
+                    // Add SSE format: "data: {json}\n\n"
+                    const sseData = `data: ${chunkStr}\n\n`;
+                    controller.enqueue(encoder.encode(sseData));
+                  } catch (err) {
+                    console.error('[TEE] Error processing chunk:', err);
+                  }
+                }
+                // Send the final [DONE] marker
+                controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+                controller.close();
+              },
+            });
+
+            const response = new Response(stream, {
+              status: 200,
+              headers: {
+                'content-type': 'text/event-stream',
+                'cache-control': 'no-cache',
+                connection: 'keep-alive',
+              },
+            });
+            const requestLogID =
+              'tee_stream_' + ((Math.random() * (1 << 24)) | 0).toString(16).padStart(6, '0');
+            return {
+              response,
+              options,
+              controller: new AbortController(),
+              requestLogID,
+              retryOfRequestLogID: retryOfRequestLogID,
+              startTime: Date.now(),
+            };
+          } else {
+            // Non-streaming response
+            const response = new Response(JSON.stringify(teeResponse), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+            const requestLogID = 'tee_' + ((Math.random() * (1 << 24)) | 0).toString(16).padStart(6, '0');
+            return {
+              response,
+              options,
+              controller: new AbortController(),
+              requestLogID,
+              retryOfRequestLogID: retryOfRequestLogID,
+              startTime: Date.now(),
+            };
+          }
         }
       } catch (error) {
         // If TEE processing fails, log and continue with normal flow.
@@ -630,7 +675,6 @@ export class OpenAI {
     const requestLogID = 'log_' + ((Math.random() * (1 << 24)) | 0).toString(16).padStart(6, '0');
     const retryLogStr = retryOfRequestLogID === undefined ? '' : `, retryOf: ${retryOfRequestLogID}`;
     const startTime = Date.now();
-
 
     loggerFor(this).debug(
       `[${requestLogID}] sending request`,
@@ -1003,7 +1047,6 @@ export class OpenAI {
     }
   }
 
-
   /**
    * Initialize WASM module for Sindri encryption.
    */
@@ -1017,13 +1060,13 @@ export class OpenAI {
       try {
         // Dynamic import to avoid circular dependencies
         const { SindriTEE } = await import('./sindri/index');
-        
+
         // Initialize with default configuration
         // Encryption will be enabled by default with ephemeral keys
         await SindriTEE.initialize({
           debug: false,
         });
-        
+
         this.sindriInitialized = true;
         loggerFor(this).debug('Sindri WASM encryption initialized');
       } catch (error) {

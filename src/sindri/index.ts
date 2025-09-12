@@ -26,6 +26,8 @@ interface SindriWASMFunctions {
     response?: string;
     status?: number;
     error?: string;
+    stream?: boolean;
+    chunks?: string[];
   }>;
   sindri_getServerPublicKey: () => {
     publicKey?: string;
@@ -402,6 +404,15 @@ export class SindriTEE {
 
     if (result.error) {
       throw new Error(`Chat completion failed: ${result.error}`);
+    }
+
+    // Check if this is a streaming response
+    if (result.stream && result.chunks) {
+      // Return a special marker to indicate streaming
+      return {
+        __tee_stream: true,
+        chunks: result.chunks
+      };
     }
 
     if (result.response) {
