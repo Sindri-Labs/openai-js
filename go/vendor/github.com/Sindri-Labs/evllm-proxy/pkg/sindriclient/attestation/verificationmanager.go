@@ -125,7 +125,9 @@ func (o *VerificationManagerOptions) Validate() error {
 	if o.ReportRequestURL == "" {
 		return errors.New("report request URL cannot be empty")
 	}
-	// ReportRequestAPIKey is now optional - if not set, will use passed Authorization header
+	if o.ReportRequestAPIKey == "" {
+		return errors.New("report request API key cannot be empty")
+	}
 	if o.ReportRequestTimeout < 0 {
 		return errors.New("report request timeout must be greater than or equal to 0")
 	}
@@ -316,21 +318,16 @@ func NewVerificationManager(opts VerificationManagerOptions) (*VerificationManag
 		return nil, err
 	}
 
-	headers := map[string]string{
-		"Content-Type": "application/json",
-	}
-	// Only set Authorization header if API key is provided
-	if opts.ReportRequestAPIKey != "" {
-		headers["Authorization"] = "Bearer " + opts.ReportRequestAPIKey
-	}
-
 	manager := &VerificationManager{
 		reportRequest: &httpclient.HttpRequest{
-			Client:  &http.Client{},
-			Logger:  opts.Logger,
-			Method:  http.MethodGet,
-			URL:     opts.ReportRequestURL,
-			Headers: headers,
+			Client: &http.Client{},
+			Logger: opts.Logger,
+			Method: http.MethodGet,
+			URL:    opts.ReportRequestURL,
+			Headers: map[string]string{
+				"Content-Type":  "application/json",
+				"Authorization": "Bearer " + opts.ReportRequestAPIKey,
+			},
 		},
 		reportRequestTimeout:          opts.ReportRequestTimeout,
 		reportRenewalThresholdSeconds: opts.ReportRenewalThresholdSeconds,
