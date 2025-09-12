@@ -8,7 +8,5 @@
  * At build time, this is replaced with the actual WASM bytes embedded as base64.
  */
 export function getWasmBytes(): Uint8Array {
-  throw new Error(
-    'WASM module not built. Run "nix build" to build the WASM module with embedded binary.'
-  );
+  throw new Error('WASM module not built. Run "nix build" to build the WASM module with embedded binary.');
 }

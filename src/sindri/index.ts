@@ -3,8 +3,7 @@
  * This module provides WebAssembly-based HPKE encryption for secure communication with Sindri's TEE.
  */
 
-import type { OpenAI } from '../client';
-import type { SindriTEEConfig, SindriClientConfig, EncryptionConfig } from './types';
+import type { SindriTEEConfig, EncryptionConfig } from './types';
 import {
   WASM_LOAD_MAX_ATTEMPTS,
   WASM_LOAD_INITIAL_DELAY_MS,
@@ -67,7 +66,7 @@ export class SindriTEE {
 
     // Start new initialization.
     this.initPromise = this.doInitialize(config);
-    
+
     try {
       await this.initPromise;
       this.initialized = true;
@@ -82,7 +81,6 @@ export class SindriTEE {
    * Perform the actual initialization.
    */
   private static async doInitialize(config: Partial<SindriTEEConfig>): Promise<void> {
-
     // Build complete configuration with defaults inline.
     const fullConfig: SindriTEEConfig = {
       // Optional fields with defaults.
@@ -100,8 +98,10 @@ export class SindriTEE {
         ...(config.encryption?.privateKey && { privateKey: config.encryption.privateKey }),
         ...(config.encryption?.publicKey && { publicKey: config.encryption.publicKey }),
         attestation: {
-          validityPeriodMinutes: config.encryption?.attestation?.validityPeriodMinutes ?? DEFAULT_ATTESTATION_VALIDITY_MINUTES,
-          renewalThresholdSeconds: config.encryption?.attestation?.renewalThresholdSeconds ?? DEFAULT_ATTESTATION_RENEWAL_SECONDS,
+          validityPeriodMinutes:
+            config.encryption?.attestation?.validityPeriodMinutes ?? DEFAULT_ATTESTATION_VALIDITY_MINUTES,
+          renewalThresholdSeconds:
+            config.encryption?.attestation?.renewalThresholdSeconds ?? DEFAULT_ATTESTATION_RENEWAL_SECONDS,
           verifyRegisters: config.encryption?.attestation?.verifyRegisters ?? false,
           ...(config.encryption?.attestation?.approvedMeasurements && {
             approvedMeasurements: config.encryption.attestation.approvedMeasurements,
@@ -154,7 +154,7 @@ export class SindriTEE {
     // Wait for WASM functions to be available with exponential backoff.
     for (let attempt = 0; attempt < WASM_LOAD_MAX_ATTEMPTS; attempt++) {
       const global = globalThis as any;
-      
+
       if (typeof global.sindri_initialize === 'function') {
         // Functions are available, store them.
         this.wasmFunctions = {
@@ -169,15 +169,15 @@ export class SindriTEE {
         }
         return;
       }
-      
+
       // Wait with exponential backoff.
       const delay = Math.min(
         WASM_LOAD_INITIAL_DELAY_MS * Math.pow(WASM_LOAD_BACKOFF_FACTOR, attempt),
-        WASM_LOAD_MAX_DELAY_MS
+        WASM_LOAD_MAX_DELAY_MS,
       );
-      await new Promise(resolve => setTimeout(resolve, delay));
+      await new Promise((resolve) => setTimeout(resolve, delay));
     }
-    
+
     throw new Error('WASM functions not found after maximum attempts');
   }
 
@@ -240,7 +240,6 @@ export class SindriTEE {
     return result.publicKey || result.message || null;
   }
 
-
   /**
    * Update TEE configuration at runtime.
    * Note: Some changes may require re-initialization.
@@ -257,20 +256,20 @@ export class SindriTEE {
     const oldConfig = this.config;
     this.config = {
       // Core fields.
-      ...(config.requestTimeoutSeconds !== undefined || oldConfig.requestTimeoutSeconds !== undefined
-        ? { requestTimeoutSeconds: config.requestTimeoutSeconds ?? oldConfig.requestTimeoutSeconds }
-        : {}),
-      ...(config.logLevel !== undefined || oldConfig.logLevel !== undefined
-        ? { logLevel: config.logLevel ?? oldConfig.logLevel }
-        : {}),
+      ...(config.requestTimeoutSeconds !== undefined || oldConfig.requestTimeoutSeconds !== undefined ?
+        { requestTimeoutSeconds: config.requestTimeoutSeconds ?? oldConfig.requestTimeoutSeconds }
+      : {}),
+      ...(config.logLevel !== undefined || oldConfig.logLevel !== undefined ?
+        { logLevel: config.logLevel ?? oldConfig.logLevel }
+      : {}),
 
       // TEE-specific settings.
-      ...(config.enabled !== undefined || oldConfig.enabled !== undefined
-        ? { enabled: config.enabled ?? oldConfig.enabled }
-        : {}),
-      ...(config.debug !== undefined || oldConfig.debug !== undefined
-        ? { debug: config.debug ?? oldConfig.debug }
-        : {}),
+      ...(config.enabled !== undefined || oldConfig.enabled !== undefined ?
+        { enabled: config.enabled ?? oldConfig.enabled }
+      : {}),
+      ...(config.debug !== undefined || oldConfig.debug !== undefined ?
+        { debug: config.debug ?? oldConfig.debug }
+      : {}),
 
       // Merge encryption configuration.
     };
@@ -281,23 +280,23 @@ export class SindriTEE {
         const encryptionConfig: EncryptionConfig = {
           enabled: config.encryption.enabled ?? oldConfig.encryption?.enabled ?? true,
         };
-        
+
         // Add optional fields only if they have values
         const keySource = config.encryption.keySource ?? oldConfig.encryption?.keySource;
         if (keySource !== undefined) {
           encryptionConfig.keySource = keySource;
         }
-        
+
         const privateKey = config.encryption.privateKey ?? oldConfig.encryption?.privateKey;
         if (privateKey !== undefined) {
           encryptionConfig.privateKey = privateKey;
         }
-        
+
         const publicKey = config.encryption.publicKey ?? oldConfig.encryption?.publicKey;
         if (publicKey !== undefined) {
           encryptionConfig.publicKey = publicKey;
         }
-        
+
         // Handle attestation
         if (config.encryption.attestation || oldConfig.encryption?.attestation) {
           if (config.encryption.attestation) {
@@ -309,7 +308,7 @@ export class SindriTEE {
             encryptionConfig.attestation = oldConfig.encryption.attestation;
           }
         }
-        
+
         this.config.encryption = encryptionConfig;
       } else if (oldConfig.encryption) {
         this.config.encryption = oldConfig.encryption;
@@ -341,7 +340,7 @@ export class SindriTEE {
   /**
    * Intercept chat completion requests and route through TEE.
    * The WASM module handles all encryption, attestation, and communication.
-   * 
+   *
    * @param body - The request body
    * @param options - Request options
    * @param apiKey - API key from the OpenAI client
@@ -399,7 +398,7 @@ export class SindriTEE {
       __tee_auth: apiKey,
       __tee_endpoint: baseURL + '/v1/chat/completions',
     });
-    
+
     const result = await this.wasmFunctions.sindri_chatCompletion(bodyStr);
 
     if (result.error) {
@@ -411,7 +410,7 @@ export class SindriTEE {
       // Return a special marker to indicate streaming
       return {
         __tee_stream: true,
-        chunks: result.chunks
+        chunks: result.chunks,
       };
     }
 

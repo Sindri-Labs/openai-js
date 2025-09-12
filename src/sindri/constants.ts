@@ -35,7 +35,7 @@ export const SINDRI_SUPPORTED_MODELS = ['gemma3'] as const;
  */
 export function isSindriEndpoint(url: string): boolean {
   const lowerUrl = url.toLowerCase();
-  return SINDRI_DOMAINS.some(domain => lowerUrl.includes(domain));
+  return SINDRI_DOMAINS.some((domain) => lowerUrl.includes(domain));
 }
 
 /**

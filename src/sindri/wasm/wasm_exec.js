@@ -7,7 +7,9 @@
 if (typeof global !== 'undefined') {
   global.Go = class Go {
     constructor() {
-      throw new Error('WASM runtime not built. Please run the nix build process to generate the WASM runtime.');
+      throw new Error(
+        'WASM runtime not built. Please run the nix build process to generate the WASM runtime.',
+      );
     }
   };
 }
