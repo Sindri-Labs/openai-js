@@ -1,5 +1,5 @@
 {
-  "name": "openai",
+  "name": "@sindrilabs/openai",
   "version": "5.14.0",
   "description": "Sindri OpenAI-Compatible JS SDK",
   "author": "OpenAI <support@openai.com>",
