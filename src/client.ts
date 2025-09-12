@@ -350,17 +350,13 @@ export class OpenAI {
       );
     }
 
-    // Default to Sindri TEE endpoint if OPENAI_USE_TEE is not false.
-    const useTEE = process.env['OPENAI_USE_TEE'] !== 'false';
-    const defaultBaseURL = useTEE ? SINDRI_BASE_URL : 'https://api.openai.com/v1';
-
     const options: ClientOptions = {
       apiKey,
       organization,
       project,
       webhookSecret,
       ...opts,
-      baseURL: baseURL || defaultBaseURL,
+      baseURL: baseURL || SINDRI_BASE_URL,
     };
 
     if (!options.dangerouslyAllowBrowser && isRunningInBrowser()) {
