@@ -135,31 +135,16 @@ export interface EncryptionConfig {
 
 /**
  * Main SindriClient configuration.
- * This matches the sindriClient section of the YAML config used by native evllm-proxy.
+ * This configuration is for TEE-specific settings only.
+ * Authentication and endpoint are passed through from the OpenAI client.
  *
  * Validation rules (enforced in Go):
- * - baseURL: Required, must be a valid URL
- * - apiKey: Required for authenticated endpoints
  * - requestTimeoutSeconds: Must be positive if provided
  */
 export interface SindriClientConfig {
   /**
-   * Base URL of the Sindri API endpoint.
-   * Required. Example: 'https://sindri.app/api/ai/v1/openai'
-   * The evllm-proxy will append '/v1/chat/completions' to this.
-   */
-  baseURL: string;
-
-  /**
-   * API key for authentication.
-   * Required for most endpoints.
-   * Format: 'sindri_<key>' or standard OpenAI format.
-   */
-  apiKey: string;
-
-  /**
    * Request timeout in seconds.
-   * Default: 30 seconds if not specified.
+   * Default: 300 seconds if not specified.
    * Must be positive if provided.
    */
   requestTimeoutSeconds?: number;

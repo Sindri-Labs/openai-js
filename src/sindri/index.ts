@@ -49,10 +49,6 @@ export class SindriTEE {
 
     // Build complete configuration with defaults inline.
     const fullConfig: SindriTEEConfig = {
-      // Required fields with environment fallbacks.
-      baseURL: config.baseURL || process.env['SINDRI_BASE_URL'] || (process.env['SINDRI_API_KEY'] || process.env['OPENAI_API_KEY'] ? 'https://sindri.app/api/ai/v1/openai' : ''),
-      apiKey: config.apiKey || process.env['SINDRI_API_KEY'] || process.env['OPENAI_API_KEY'] || '',
-
       // Optional fields with defaults.
       requestTimeoutSeconds: config.requestTimeoutSeconds ?? 300,
       ...(config.logLevel && { logLevel: config.logLevel }),
@@ -205,31 +201,6 @@ export class SindriTEE {
     return result.publicKey || result.message || null;
   }
 
-  /**
-   * Make a chat completion request directly from WASM.
-   */
-  static async chatCompletion(requestBody: any): Promise<any> {
-    if (!this.wasmFunctions) {
-      throw new Error('SindriTEE not initialized');
-    }
-
-    const bodyStr = JSON.stringify(requestBody);
-    const result = await this.wasmFunctions.sindri_chatCompletion(bodyStr);
-
-    if (result.error) {
-      throw new Error(`Chat completion failed: ${result.error}`);
-    }
-
-    if (result.response) {
-      try {
-        return JSON.parse(result.response);
-      } catch {
-        return result.response;
-      }
-    }
-
-    return result;
-  }
 
   /**
    * Update TEE configuration at runtime.
@@ -247,8 +218,6 @@ export class SindriTEE {
     const oldConfig = this.config;
     this.config = {
       // Core fields.
-      baseURL: config.baseURL ?? oldConfig.baseURL,
-      apiKey: config.apiKey ?? oldConfig.apiKey,
       ...(config.requestTimeoutSeconds !== undefined || oldConfig.requestTimeoutSeconds !== undefined
         ? { requestTimeoutSeconds: config.requestTimeoutSeconds ?? oldConfig.requestTimeoutSeconds }
         : {}),
@@ -310,7 +279,7 @@ export class SindriTEE {
 
     // If significant changes, suggest re-initialization.
     if (this.initialized && this.wasmFunctions) {
-      if (config.encryption !== undefined || config.apiKey !== undefined || config.baseURL !== undefined) {
+      if (config.encryption !== undefined) {
         console.warn('Configuration changes may require re-initialization to take effect');
       }
     }
@@ -333,6 +302,11 @@ export class SindriTEE {
   /**
    * Intercept chat completion requests and route through TEE.
    * The WASM module handles all encryption, attestation, and communication.
+   * 
+   * @param body - The request body
+   * @param options - Request options
+   * @param apiKey - API key from the OpenAI client
+   * @param baseURL - Base URL from the OpenAI client
    */
   static async interceptChatCompletion(
     body: any,
@@ -345,31 +319,62 @@ export class SindriTEE {
       return null; // Let the normal flow continue.
     }
 
-    // Initialize WASM if needed with override credentials if provided.
+    // Initialize WASM if needed.
     if (!this.initialized) {
-      const initConfig: Partial<SindriTEEConfig> = {};
-      if (apiKey) initConfig.apiKey = apiKey;
-      if (baseURL) initConfig.baseURL = baseURL;
-      await this.initialize(initConfig);
+      await this.initialize({});
     }
 
-    // Check that we have required credentials.
-    if (!this.config?.apiKey || !this.config?.baseURL) {
+    // Check that we have required credentials from the OpenAI client.
+    if (!apiKey || !baseURL) {
       if (this.config?.debug) {
-        console.warn('[TEE] Missing API key or base URL for TEE request');
+        console.warn('[TEE] Missing API key or base URL from OpenAI client');
       }
       return null;
     }
 
     try {
-      // Call the WASM chat completion function.
+      // Call the WASM chat completion function with credentials.
       // The WASM module handles all encryption and attestation internally.
-      return await this.chatCompletion(body);
+      return await this.chatCompletionWithAuth(body, apiKey, baseURL);
     } catch (error) {
       if (this.config?.debug) {
         console.error('[TEE] Chat completion failed:', error);
       }
       throw error;
     }
+  }
+
+  /**
+   * Make a chat completion request with specific auth and endpoint.
+   * This method will be called by interceptChatCompletion with credentials
+   * passed through from the OpenAI client.
+   */
+  static async chatCompletionWithAuth(requestBody: any, apiKey: string, baseURL: string): Promise<any> {
+    if (!this.wasmFunctions) {
+      throw new Error('SindriTEE not initialized');
+    }
+
+    // Pass the auth and endpoint to the WASM module
+    const bodyStr = JSON.stringify({
+      ...requestBody,
+      __tee_auth: apiKey,
+      __tee_endpoint: baseURL + '/v1/chat/completions',
+    });
+    
+    const result = await this.wasmFunctions.sindri_chatCompletion(bodyStr);
+
+    if (result.error) {
+      throw new Error(`Chat completion failed: ${result.error}`);
+    }
+
+    if (result.response) {
+      try {
+        return JSON.parse(result.response);
+      } catch {
+        return result.response;
+      }
+    }
+
+    return result;
   }
 }

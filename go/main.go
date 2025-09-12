@@ -7,6 +7,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"sync"
 	"syscall/js"
 	"time"
 
@@ -17,14 +19,14 @@ import (
 )
 
 var (
-	globalClient *sindriclient.SindriClient
-	logger       *zap.Logger
+	globalConfig   *ConfigFromJS
+	clientCache    map[string]*sindriclient.SindriClient
+	clientCacheMux sync.RWMutex
+	logger         *zap.Logger
 )
 
 // ConfigFromJS represents the configuration passed from JavaScript.
 type ConfigFromJS struct {
-	BaseURL               string                  `json:"baseURL"`
-	APIKey                string                  `json:"apiKey"`
 	RequestTimeoutSeconds int                     `json:"requestTimeoutSeconds"`
 	LogLevel              string                  `json:"logLevel"`
 	Encryption            *EncryptionConfigFromJS `json:"encryption"`
@@ -168,14 +170,18 @@ func initializeSindriClient(this js.Value, args []js.Value) interface{} {
 	}
 	logger = createJSLogger(logLevel)
 	logger.Info("Initializing SindriClient",
-		zap.String("baseURL", config.BaseURL),
 		zap.Bool("encryptionEnabled", config.Encryption != nil && config.Encryption.Enabled),
 	)
 
-	// Build SindriClientOptions from the configuration.
+	// Store the configuration globally for later use
+	// We'll create clients on-demand and cache them by apiKey+baseURL
+	globalConfig = &config
+	clientCache = make(map[string]*sindriclient.SindriClient)
+
+	// Validate that we can create a client with the encryption config
 	options := sindriclient.SindriClientOptions{
-		BaseURL:               config.BaseURL,
-		APIKey:                config.APIKey,
+		BaseURL:               "https://placeholder.com", // Will be overridden per-request
+		APIKey:                "placeholder",             // Will be overridden per-request
 		Logger:                logger,
 		RequestTimeoutSeconds: config.RequestTimeoutSeconds,
 	}
@@ -225,13 +231,14 @@ func initializeSindriClient(this js.Value, args []js.Value) interface{} {
 			}
 		}
 
-		// Configure attestation.
+		// Pass through attestation config - evllm-proxy handles all verification
 		if config.Encryption.Attestation != nil {
 			att := config.Encryption.Attestation
 			options.AttestationValidityPeriodMinutes = att.ValidityPeriodMinutes
 			options.AttestationRenewalThresholdSeconds = att.RenewalThresholdSeconds
 			options.AttestationVerifyRegisters = att.VerifyRegisters
 
+			// Pass through approved measurements if configured
 			if att.ApprovedMeasurements != nil {
 				options.AttestationApprovedRegister1 = att.ApprovedMeasurements.RTMR1
 				options.AttestationApprovedRegister2 = att.ApprovedMeasurements.RTMR2
@@ -263,7 +270,9 @@ func initializeSindriClient(this js.Value, args []js.Value) interface{} {
 		}
 	}
 
-	globalClient = client
+	// Don't store a global client - we'll create one per request
+	// Just validate that we can create a client with the config
+	client.Stop() // Clean up the test client
 
 	// Return the public key if using ephemeral keys.
 	response := map[string]interface{}{
@@ -284,6 +293,114 @@ func initializeSindriClient(this js.Value, args []js.Value) interface{} {
 	return response
 }
 
+// getOrCreateClient gets a cached client or creates a new one for the given auth/endpoint.
+func getOrCreateClient(apiKey, baseURL string) (*sindriclient.SindriClient, error) {
+	// Create cache key from apiKey and baseURL
+	cacheKey := fmt.Sprintf("%s|%s", apiKey, baseURL)
+
+	// Try to get from cache first
+	clientCacheMux.RLock()
+	client, exists := clientCache[cacheKey]
+	clientCacheMux.RUnlock()
+
+	if exists && client != nil {
+		return client, nil
+	}
+
+	// Need to create a new client
+	clientCacheMux.Lock()
+	defer clientCacheMux.Unlock()
+
+	// Double-check after acquiring write lock
+	client, exists = clientCache[cacheKey]
+	if exists && client != nil {
+		return client, nil
+	}
+
+	// Create client options with the provided auth
+	options := sindriclient.SindriClientOptions{
+		BaseURL:               baseURL,
+		APIKey:                apiKey,
+		Logger:                logger,
+		RequestTimeoutSeconds: globalConfig.RequestTimeoutSeconds,
+	}
+
+	// Set default timeout if not specified
+	if options.RequestTimeoutSeconds <= 0 {
+		options.RequestTimeoutSeconds = 300
+	}
+
+	// Configure encryption from saved config
+	if globalConfig.Encryption != nil && globalConfig.Encryption.Enabled {
+		options.EnableEncryption = true
+
+		switch globalConfig.Encryption.KeySource {
+		case "ephemeral", "":
+			options.UseEphemeralKeys = true
+		case "value":
+			if globalConfig.Encryption.PrivateKey != nil && globalConfig.Encryption.PrivateKey.Value != "" {
+				privKeyData, err := base64.StdEncoding.DecodeString(globalConfig.Encryption.PrivateKey.Value)
+				if err != nil {
+					privKeyData = []byte(globalConfig.Encryption.PrivateKey.Value)
+				}
+				options.PrivateKeyPEMBytes = privKeyData
+			}
+			if globalConfig.Encryption.PublicKey != nil && globalConfig.Encryption.PublicKey.Value != "" {
+				pubKeyData, err := base64.StdEncoding.DecodeString(globalConfig.Encryption.PublicKey.Value)
+				if err != nil {
+					pubKeyData = []byte(globalConfig.Encryption.PublicKey.Value)
+				}
+				options.PublicKeyPEMBytes = pubKeyData
+			}
+		}
+
+		// Pass through attestation config - evllm-proxy handles all verification
+		if globalConfig.Encryption.Attestation != nil {
+			att := globalConfig.Encryption.Attestation
+			options.AttestationValidityPeriodMinutes = att.ValidityPeriodMinutes
+			options.AttestationRenewalThresholdSeconds = att.RenewalThresholdSeconds
+			options.AttestationVerifyRegisters = att.VerifyRegisters
+
+			// Pass through approved measurements if configured
+			if att.ApprovedMeasurements != nil {
+				options.AttestationApprovedRegister1 = att.ApprovedMeasurements.RTMR1
+				options.AttestationApprovedRegister2 = att.ApprovedMeasurements.RTMR2
+				options.AttestationApprovedRegister3 = att.ApprovedMeasurements.RTMR3
+			}
+		}
+
+		if options.AttestationValidityPeriodMinutes <= 0 {
+			options.AttestationValidityPeriodMinutes = 60
+		}
+		if options.AttestationRenewalThresholdSeconds <= 0 {
+			options.AttestationRenewalThresholdSeconds = 30
+		}
+	}
+
+	// Create the client
+	newClient, err := sindriclient.NewSindriClient(&options)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create SindriClient: %w", err)
+	}
+
+	// Cache the client
+	clientCache[cacheKey] = newClient
+
+	logger.Info("Created new SindriClient",
+		zap.String("cacheKey", cacheKey),
+		zap.Bool("encryptionEnabled", options.EnableEncryption),
+	)
+
+	return newClient, nil
+}
+
+// RequestWithAuth represents a request with auth and endpoint info
+type RequestWithAuth struct {
+	TEEAuth     string `json:"__tee_auth"`
+	TEEEndpoint string `json:"__tee_endpoint"`
+	*cm.ChatCompletionNewParams
+}
+
 // chatCompletion makes a chat completion request using the SindriClient.
 func chatCompletion(this js.Value, args []js.Value) interface{} {
 	if len(args) < 1 {
@@ -292,9 +409,9 @@ func chatCompletion(this js.Value, args []js.Value) interface{} {
 		}
 	}
 
-	if globalClient == nil {
+	if globalConfig == nil {
 		return map[string]interface{}{
-			"error": "SindriClient not initialized. Call initialize first.",
+			"error": "TEE not initialized. Call initialize first.",
 		}
 	}
 
@@ -306,10 +423,51 @@ func chatCompletion(this js.Value, args []js.Value) interface{} {
 		reject := promiseArgs[1]
 
 		go func() {
-			// Parse the request.
-			var params cm.ChatCompletionNewParams
-			if err := json.Unmarshal([]byte(requestBody), &params); err != nil {
+			// Parse the request with auth info.
+			var requestWithAuth map[string]interface{}
+			if err := json.Unmarshal([]byte(requestBody), &requestWithAuth); err != nil {
 				reject.Invoke(fmt.Sprintf("Failed to parse request: %v", err))
+				return
+			}
+
+			// Extract auth and endpoint
+			authHeader, _ := requestWithAuth["__tee_auth"].(string)
+			endpoint, _ := requestWithAuth["__tee_endpoint"].(string)
+
+			// Remove special fields
+			delete(requestWithAuth, "__tee_auth")
+			delete(requestWithAuth, "__tee_endpoint")
+
+			// Extract base URL from endpoint (remove /v1/chat/completions)
+			baseURL := endpoint
+			if strings.HasSuffix(baseURL, "/v1/chat/completions") {
+				baseURL = baseURL[:len(baseURL)-20]
+			}
+
+			// Extract API key from auth header
+			apiKey := authHeader
+			if strings.HasPrefix(apiKey, "Bearer ") {
+				apiKey = apiKey[7:]
+			}
+
+			// Get or create a cached client for this auth/endpoint
+			client, err := getOrCreateClient(apiKey, baseURL)
+			if err != nil {
+				reject.Invoke(fmt.Sprintf("Failed to get SindriClient: %v", err))
+				return
+			}
+
+			// Re-marshal the params without auth fields
+			paramsJSON, err := json.Marshal(requestWithAuth)
+			if err != nil {
+				reject.Invoke(fmt.Sprintf("Failed to marshal params: %v", err))
+				return
+			}
+
+			// Parse as ChatCompletionNewParams
+			var params cm.ChatCompletionNewParams
+			if err := json.Unmarshal(paramsJSON, &params); err != nil {
+				reject.Invoke(fmt.Sprintf("Failed to parse params: %v", err))
 				return
 			}
 
@@ -320,7 +478,13 @@ func chatCompletion(this js.Value, args []js.Value) interface{} {
 			}
 
 			// Use the evllm-proxy client with attestation and encryption.
-			completion, err := globalClient.ChatCompletionNoStream(&params, &td)
+			// The client already has the correct auth/endpoint from when it was created
+			// Pass empty strings since evllm-proxy prioritizes client's config over parameters
+			logger.Info("Calling ChatCompletionNoStream",
+				zap.String("clientApiKey", apiKey[:20]+"..."), // Log first 20 chars
+				zap.String("clientBaseURL", baseURL),
+			)
+			completion, err := client.ChatCompletionNoStream(&params, &td, "", "")
 			if err != nil {
 				if logger != nil {
 					logger.Error("Chat completion failed", zap.Error(err))
@@ -351,36 +515,11 @@ func chatCompletion(this js.Value, args []js.Value) interface{} {
 
 // getServerPublicKey returns the server's public key if available.
 func getServerPublicKey(this js.Value, args []js.Value) interface{} {
-	if globalClient == nil {
-		return map[string]interface{}{
-			"error": "SindriClient not initialized",
-		}
-	}
-
-	// The evllm-proxy client manages the server public key internally.
-	pubKey, err := globalClient.GetServerPublicKey()
-	if err != nil {
-		return map[string]interface{}{
-			"error": fmt.Sprintf("Failed to get server public key: %v", err),
-		}
-	}
-
-	if pubKey == nil {
-		return map[string]interface{}{
-			"error": "No server public key available",
-		}
-	}
-
-	// Convert to base64.
-	pubKeyBytes, err := pubKey.MarshalBinary()
-	if err != nil {
-		return map[string]interface{}{
-			"error": fmt.Sprintf("Failed to marshal public key: %v", err),
-		}
-	}
-
+	// Since we create clients per-request, we can't retrieve the server public key
+	// without making a request. The evllm-proxy handles key exchange internally
+	// during the attestation process.
 	return map[string]interface{}{
-		"publicKey": base64.StdEncoding.EncodeToString(pubKeyBytes),
+		"error": "Server public key is managed internally by evllm-proxy during attestation",
 	}
 }
 
