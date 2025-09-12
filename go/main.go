@@ -479,12 +479,11 @@ func chatCompletion(this js.Value, args []js.Value) interface{} {
 
 			// Use the evllm-proxy client with attestation and encryption.
 			// The client already has the correct auth/endpoint from when it was created
-			// Pass empty strings since evllm-proxy prioritizes client's config over parameters
 			logger.Info("Calling ChatCompletionNoStream",
 				zap.String("clientApiKey", apiKey[:20]+"..."), // Log first 20 chars
 				zap.String("clientBaseURL", baseURL),
 			)
-			completion, err := client.ChatCompletionNoStream(&params, &td, "", "")
+			completion, err := client.ChatCompletionNoStream(&params, &td)
 			if err != nil {
 				if logger != nil {
 					logger.Error("Chat completion failed", zap.Error(err))
