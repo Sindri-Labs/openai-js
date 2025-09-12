@@ -73,15 +73,6 @@ func jsLog(level, message string, fields ...interface{}) {
 	js.Global().Get("console").Call("log", fmt.Sprintf("[WASM %s] %s %v", level, message, fields))
 }
 
-// safeSubstring returns a substring of s up to length characters, with "..." appended if truncated.
-// Returns the full string if it's shorter than or equal to length.
-func safeSubstring(s string, length int) string {
-	if len(s) <= length {
-		return s
-	}
-	return s[:length] + "..."
-}
-
 // createJSLogger creates a zap logger that outputs to JavaScript console.
 func createJSLogger(logLevel string) *zap.Logger {
 	// Parse log level.
@@ -461,7 +452,7 @@ func chatCompletion(this js.Value, args []js.Value) interface{} {
 			// Use the evllm-proxy client with attestation and encryption.
 			// The client already has the correct auth/endpoint from when it was created
 			logger.Info("Calling ChatCompletionNoStream",
-				zap.String("clientApiKey", safeSubstring(apiKey, 20)), // Log first 20 chars safely
+				zap.String("clientApiKey", apiKey[:min(len(apiKey), 20)]), // Log first 20 chars safely
 				zap.String("clientBaseURL", baseURL),
 			)
 			completion, err := client.ChatCompletionNoStream(&params, &td)
