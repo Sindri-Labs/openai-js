@@ -5,6 +5,15 @@
 
 import type { OpenAI } from '../client';
 import type { SindriTEEConfig, SindriClientConfig, EncryptionConfig } from './types';
+import {
+  WASM_LOAD_MAX_ATTEMPTS,
+  WASM_LOAD_INITIAL_DELAY_MS,
+  WASM_LOAD_MAX_DELAY_MS,
+  WASM_LOAD_BACKOFF_FACTOR,
+  DEFAULT_REQUEST_TIMEOUT_SECONDS,
+  DEFAULT_ATTESTATION_VALIDITY_MINUTES,
+  DEFAULT_ATTESTATION_RENEWAL_SECONDS,
+} from './constants';
 
 // Type definitions for the WASM module functions matching the new Go interface.
 interface SindriWASMFunctions {
@@ -35,6 +44,7 @@ interface SindriWASMFunctions {
 export class SindriTEE {
   private static instance: SindriTEE | null = null;
   private static initialized = false;
+  private static initPromise: Promise<void> | null = null;
   private static goInstance: any = null;
   private static wasmFunctions: SindriWASMFunctions | null = null;
   private static config: SindriTEEConfig | null = null;
@@ -43,14 +53,38 @@ export class SindriTEE {
    * Initialize the TEE module with evllm-proxy configuration.
    */
   static async initialize(config: Partial<SindriTEEConfig> = {}): Promise<void> {
+    // Return immediately if already initialized.
     if (this.initialized) {
       return;
     }
 
+    // Return existing initialization promise if one is in progress.
+    if (this.initPromise) {
+      return this.initPromise;
+    }
+
+    // Start new initialization.
+    this.initPromise = this.doInitialize(config);
+    
+    try {
+      await this.initPromise;
+      this.initialized = true;
+    } catch (error) {
+      // Clear the promise on error so it can be retried.
+      this.initPromise = null;
+      throw error;
+    }
+  }
+
+  /**
+   * Perform the actual initialization.
+   */
+  private static async doInitialize(config: Partial<SindriTEEConfig>): Promise<void> {
+
     // Build complete configuration with defaults inline.
     const fullConfig: SindriTEEConfig = {
       // Optional fields with defaults.
-      requestTimeoutSeconds: config.requestTimeoutSeconds ?? 300,
+      requestTimeoutSeconds: config.requestTimeoutSeconds ?? DEFAULT_REQUEST_TIMEOUT_SECONDS,
       ...(config.logLevel && { logLevel: config.logLevel }),
 
       // TEE-specific settings.
@@ -64,8 +98,8 @@ export class SindriTEE {
         ...(config.encryption?.privateKey && { privateKey: config.encryption.privateKey }),
         ...(config.encryption?.publicKey && { publicKey: config.encryption.publicKey }),
         attestation: {
-          validityPeriodMinutes: config.encryption?.attestation?.validityPeriodMinutes ?? 60,
-          renewalThresholdSeconds: config.encryption?.attestation?.renewalThresholdSeconds ?? 30,
+          validityPeriodMinutes: config.encryption?.attestation?.validityPeriodMinutes ?? DEFAULT_ATTESTATION_VALIDITY_MINUTES,
+          renewalThresholdSeconds: config.encryption?.attestation?.renewalThresholdSeconds ?? DEFAULT_ATTESTATION_RENEWAL_SECONDS,
           verifyRegisters: config.encryption?.attestation?.verifyRegisters ?? false,
           ...(config.encryption?.attestation?.approvedMeasurements && {
             approvedMeasurements: config.encryption.attestation.approvedMeasurements,
@@ -77,17 +111,11 @@ export class SindriTEE {
     // Store configuration.
     this.config = fullConfig;
 
-    try {
-      await this.loadWASM();
-      await this.initializeWASM();
-      this.initialized = true;
+    await this.loadWASM();
+    await this.initializeWASM();
 
-      if (this.config?.debug) {
-        console.log('SindriTEE initialized successfully');
-      }
-    } catch (error) {
-      console.error('Failed to initialize SindriTEE:', error);
-      throw error;
+    if (this.config?.debug) {
+      console.log('SindriTEE initialized successfully');
     }
   }
 
@@ -121,25 +149,34 @@ export class SindriTEE {
     // Run the Go program.
     this.goInstance.run(wasmResult.instance);
 
-    // Wait for the module to initialize.
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    // Wait for WASM functions to be available with exponential backoff.
+    for (let attempt = 0; attempt < WASM_LOAD_MAX_ATTEMPTS; attempt++) {
+      const global = globalThis as any;
+      
+      if (typeof global.sindri_initialize === 'function') {
+        // Functions are available, store them.
+        this.wasmFunctions = {
+          sindri_initialize: global.sindri_initialize,
+          sindri_chatCompletion: global.sindri_chatCompletion,
+          sindri_getServerPublicKey: global.sindri_getServerPublicKey,
+          sindri_exportPublicKey: global.sindri_exportPublicKey,
+        };
 
-    // Check if Sindri functions are available.
-    const global = globalThis as any;
-    if (typeof global.sindri_initialize === 'function') {
-      this.wasmFunctions = {
-        sindri_initialize: global.sindri_initialize,
-        sindri_chatCompletion: global.sindri_chatCompletion,
-        sindri_getServerPublicKey: global.sindri_getServerPublicKey,
-        sindri_exportPublicKey: global.sindri_exportPublicKey,
-      };
-
-      if (this.config?.debug) {
-        console.log('WASM functions loaded successfully');
+        if (this.config?.debug) {
+          console.log(`WASM functions loaded successfully after ${attempt + 1} attempts`);
+        }
+        return;
       }
-    } else {
-      throw new Error('WASM functions not found');
+      
+      // Wait with exponential backoff.
+      const delay = Math.min(
+        WASM_LOAD_INITIAL_DELAY_MS * Math.pow(WASM_LOAD_BACKOFF_FACTOR, attempt),
+        WASM_LOAD_MAX_DELAY_MS
+      );
+      await new Promise(resolve => setTimeout(resolve, delay));
     }
+    
+    throw new Error('WASM functions not found after maximum attempts');
   }
 
   /**

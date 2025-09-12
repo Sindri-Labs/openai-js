@@ -21,6 +21,7 @@ import * as API from './resources/index';
 import { APIPromise } from './core/api-promise';
 import { SindriTEE } from './sindri/index';
 import type { SindriTEEConfig } from './sindri/types';
+import { isSindriEndpoint, SINDRI_BASE_URL } from './sindri/constants';
 import {
   Batch,
   BatchCreateParams,
@@ -349,9 +350,9 @@ export class OpenAI {
       );
     }
 
-    // Default to Sindri TEE endpoint if OPENAI_USE_TEE is not false
+    // Default to Sindri TEE endpoint if OPENAI_USE_TEE is not false.
     const useTEE = process.env['OPENAI_USE_TEE'] !== 'false';
-    const defaultBaseURL = useTEE ? 'https://sindri.app/api/ai/v1/openai' : 'https://api.openai.com/v1';
+    const defaultBaseURL = useTEE ? SINDRI_BASE_URL : 'https://api.openai.com/v1';
     
     const options: ClientOptions = {
       apiKey,
@@ -371,8 +372,8 @@ export class OpenAI {
     this.baseURL = options.baseURL!;
     this.timeout = options.timeout ?? OpenAI.DEFAULT_TIMEOUT /* 10 minutes */;
     
-    // Auto-detect Sindri endpoints and initialize WASM encryption
-    if (this.isSindriEndpoint(this.baseURL)) {
+    // Auto-detect Sindri endpoints and initialize WASM encryption.
+    if (isSindriEndpoint(this.baseURL)) {
       this.initializeSindriWASM();
     }
     this.logger = options.logger ?? console;
@@ -515,7 +516,7 @@ export class OpenAI {
     { url, options }: { url: string; options: FinalRequestOptions },
   ): Promise<void> {
     // Handle Sindri encryption if needed
-    if (this.isSindriEndpoint(url)) {
+    if (isSindriEndpoint(url)) {
       await this.ensureSindriInitialized();
       
       if (this.sindriInitialized && request.body) {
@@ -1002,12 +1003,6 @@ export class OpenAI {
     }
   }
 
-  /**
-   * Check if the endpoint is a Sindri service that needs encryption.
-   */
-  private isSindriEndpoint(url: string): boolean {
-    return url.includes('sindri.app') || url.includes('sindri.ai');
-  }
 
   /**
    * Initialize WASM module for Sindri encryption.

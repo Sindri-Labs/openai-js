@@ -18,6 +18,13 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
+// Configuration defaults matching TypeScript constants.
+const (
+	DefaultRequestTimeoutSeconds      = 300
+	DefaultAttestationValidityMinutes = 60
+	DefaultAttestationRenewalSeconds  = 30
+)
+
 var (
 	globalConfig   *ConfigFromJS
 	clientCache    map[string]*sindriclient.SindriClient
@@ -64,6 +71,15 @@ type ApprovedMeasurementsJS struct {
 // jsLog logs a message to the JavaScript console.
 func jsLog(level, message string, fields ...interface{}) {
 	js.Global().Get("console").Call("log", fmt.Sprintf("[WASM %s] %s %v", level, message, fields))
+}
+
+// safeSubstring returns a substring of s up to length characters, with "..." appended if truncated.
+// Returns the full string if it's shorter than or equal to length.
+func safeSubstring(s string, length int) string {
+	if len(s) <= length {
+		return s
+	}
+	return s[:length] + "..."
 }
 
 // createJSLogger creates a zap logger that outputs to JavaScript console.
@@ -146,6 +162,91 @@ func (w *jsConsoleWriter) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
+// buildClientOptions builds SindriClientOptions from the global configuration.
+func buildClientOptions(baseURL, apiKey string) (*sindriclient.SindriClientOptions, error) {
+	if globalConfig == nil {
+		return nil, fmt.Errorf("configuration not initialized")
+	}
+
+	options := sindriclient.SindriClientOptions{
+		BaseURL:               baseURL,
+		APIKey:                apiKey,
+		Logger:                logger,
+		RequestTimeoutSeconds: globalConfig.RequestTimeoutSeconds,
+	}
+
+	// Set default timeout if not specified.
+	if options.RequestTimeoutSeconds <= 0 {
+		options.RequestTimeoutSeconds = DefaultRequestTimeoutSeconds
+	}
+
+	// Configure encryption if enabled.
+	if globalConfig.Encryption != nil && globalConfig.Encryption.Enabled {
+		options.EnableEncryption = true
+
+		// Determine key source.
+		switch globalConfig.Encryption.KeySource {
+		case "ephemeral", "":
+			options.UseEphemeralKeys = true
+
+		case "value":
+			// Use provided keys.
+			if globalConfig.Encryption.PrivateKey != nil && globalConfig.Encryption.PrivateKey.Value != "" {
+				// Decode from base64 or use as PEM directly.
+				privKeyData, err := base64.StdEncoding.DecodeString(globalConfig.Encryption.PrivateKey.Value)
+				if err != nil {
+					// Assume it's already PEM.
+					privKeyData = []byte(globalConfig.Encryption.PrivateKey.Value)
+				}
+				options.PrivateKeyPEMBytes = privKeyData
+			}
+
+			if globalConfig.Encryption.PublicKey != nil && globalConfig.Encryption.PublicKey.Value != "" {
+				// Decode from base64 or use as PEM directly.
+				pubKeyData, err := base64.StdEncoding.DecodeString(globalConfig.Encryption.PublicKey.Value)
+				if err != nil {
+					// Assume it's already PEM.
+					pubKeyData = []byte(globalConfig.Encryption.PublicKey.Value)
+				}
+				options.PublicKeyPEMBytes = pubKeyData
+			}
+
+		default:
+			return nil, fmt.Errorf("unsupported key source: %s (file sources not supported in WASM)", globalConfig.Encryption.KeySource)
+		}
+
+		// Pass through attestation config - evllm-proxy handles all verification.
+		if globalConfig.Encryption.Attestation != nil {
+			att := globalConfig.Encryption.Attestation
+			options.AttestationValidityPeriodMinutes = att.ValidityPeriodMinutes
+			options.AttestationRenewalThresholdSeconds = att.RenewalThresholdSeconds
+			options.AttestationVerifyRegisters = att.VerifyRegisters
+
+			// Pass through approved measurements if configured.
+			if att.ApprovedMeasurements != nil {
+				options.AttestationApprovedRegister1 = att.ApprovedMeasurements.RTMR1
+				options.AttestationApprovedRegister2 = att.ApprovedMeasurements.RTMR2
+				options.AttestationApprovedRegister3 = att.ApprovedMeasurements.RTMR3
+			}
+		}
+
+		// Set defaults for attestation if not provided.
+		if options.AttestationValidityPeriodMinutes <= 0 {
+			options.AttestationValidityPeriodMinutes = DefaultAttestationValidityMinutes
+		}
+		if options.AttestationRenewalThresholdSeconds <= 0 {
+			options.AttestationRenewalThresholdSeconds = DefaultAttestationRenewalSeconds
+		}
+	}
+
+	// Validate options.
+	if err := options.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid configuration: %w", err)
+	}
+
+	return &options, nil
+}
+
 // initializeSindriClient initializes the SindriClient with configuration from JavaScript.
 func initializeSindriClient(this js.Value, args []js.Value) interface{} {
 	if len(args) < 1 {
@@ -173,97 +274,31 @@ func initializeSindriClient(this js.Value, args []js.Value) interface{} {
 		zap.Bool("encryptionEnabled", config.Encryption != nil && config.Encryption.Enabled),
 	)
 
-	// Store the configuration globally for later use
-	// We'll create clients on-demand and cache them by apiKey+baseURL
+	// Store the configuration globally for later use.
+	// We'll create clients on-demand and cache them by apiKey+baseURL.
 	globalConfig = &config
 	clientCache = make(map[string]*sindriclient.SindriClient)
 
-	// Validate that we can create a client with the encryption config
-	options := sindriclient.SindriClientOptions{
-		BaseURL:               "https://placeholder.com", // Will be overridden per-request
-		APIKey:                "placeholder",             // Will be overridden per-request
-		Logger:                logger,
-		RequestTimeoutSeconds: config.RequestTimeoutSeconds,
-	}
-
-	// Set default timeout if not specified.
-	if options.RequestTimeoutSeconds <= 0 {
-		options.RequestTimeoutSeconds = 300
-	}
-
-	// Configure encryption if enabled.
-	if config.Encryption != nil && config.Encryption.Enabled {
-		options.EnableEncryption = true
-
-		// Determine key source.
-		switch config.Encryption.KeySource {
-		case "ephemeral", "":
-			options.UseEphemeralKeys = true
-			logger.Info("Using ephemeral keys for encryption")
-
-		case "value":
-			// Use provided keys.
-			if config.Encryption.PrivateKey != nil && config.Encryption.PrivateKey.Value != "" {
-				// Decode from base64 or use as PEM directly.
-				privKeyData, err := base64.StdEncoding.DecodeString(config.Encryption.PrivateKey.Value)
-				if err != nil {
-					// Assume it's already PEM.
-					privKeyData = []byte(config.Encryption.PrivateKey.Value)
-				}
-				options.PrivateKeyPEMBytes = privKeyData
-			}
-
-			if config.Encryption.PublicKey != nil && config.Encryption.PublicKey.Value != "" {
-				// Decode from base64 or use as PEM directly.
-				pubKeyData, err := base64.StdEncoding.DecodeString(config.Encryption.PublicKey.Value)
-				if err != nil {
-					// Assume it's already PEM.
-					pubKeyData = []byte(config.Encryption.PublicKey.Value)
-				}
-				options.PublicKeyPEMBytes = pubKeyData
-			}
-
-			logger.Info("Using provided keys for encryption")
-
-		default:
-			return map[string]interface{}{
-				"error": fmt.Sprintf("Unsupported key source: %s (file sources not supported in WASM)", config.Encryption.KeySource),
-			}
-		}
-
-		// Pass through attestation config - evllm-proxy handles all verification
-		if config.Encryption.Attestation != nil {
-			att := config.Encryption.Attestation
-			options.AttestationValidityPeriodMinutes = att.ValidityPeriodMinutes
-			options.AttestationRenewalThresholdSeconds = att.RenewalThresholdSeconds
-			options.AttestationVerifyRegisters = att.VerifyRegisters
-
-			// Pass through approved measurements if configured
-			if att.ApprovedMeasurements != nil {
-				options.AttestationApprovedRegister1 = att.ApprovedMeasurements.RTMR1
-				options.AttestationApprovedRegister2 = att.ApprovedMeasurements.RTMR2
-				options.AttestationApprovedRegister3 = att.ApprovedMeasurements.RTMR3
-			}
-		}
-
-		// Set defaults for attestation if not provided.
-		if options.AttestationValidityPeriodMinutes <= 0 {
-			options.AttestationValidityPeriodMinutes = 60
-		}
-		if options.AttestationRenewalThresholdSeconds <= 0 {
-			options.AttestationRenewalThresholdSeconds = 30
-		}
-	}
-
-	// Validate options.
-	if err := options.Validate(); err != nil {
+	// Validate that we can create a client with the encryption config.
+	// Use placeholder values for validation.
+	options, err := buildClientOptions("https://placeholder.com", "placeholder")
+	if err != nil {
 		return map[string]interface{}{
-			"error": fmt.Sprintf("Invalid configuration: %v", err),
+			"error": fmt.Sprintf("Failed to build options: %v", err),
 		}
 	}
 
-	// Create the client.
-	client, err := sindriclient.NewSindriClient(&options)
+	// Log key source info.
+	if options.EnableEncryption {
+		if options.UseEphemeralKeys {
+			logger.Info("Using ephemeral keys for encryption")
+		} else {
+			logger.Info("Using provided keys for encryption")
+		}
+	}
+
+	// Create a test client to validate the configuration.
+	client, err := sindriclient.NewSindriClient(options)
 	if err != nil {
 		return map[string]interface{}{
 			"error": fmt.Sprintf("Failed to create SindriClient: %v", err),
@@ -317,68 +352,14 @@ func getOrCreateClient(apiKey, baseURL string) (*sindriclient.SindriClient, erro
 		return client, nil
 	}
 
-	// Create client options with the provided auth
-	options := sindriclient.SindriClientOptions{
-		BaseURL:               baseURL,
-		APIKey:                apiKey,
-		Logger:                logger,
-		RequestTimeoutSeconds: globalConfig.RequestTimeoutSeconds,
+	// Build client options with the provided auth.
+	options, err := buildClientOptions(baseURL, apiKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build client options: %w", err)
 	}
 
-	// Set default timeout if not specified
-	if options.RequestTimeoutSeconds <= 0 {
-		options.RequestTimeoutSeconds = 300
-	}
-
-	// Configure encryption from saved config
-	if globalConfig.Encryption != nil && globalConfig.Encryption.Enabled {
-		options.EnableEncryption = true
-
-		switch globalConfig.Encryption.KeySource {
-		case "ephemeral", "":
-			options.UseEphemeralKeys = true
-		case "value":
-			if globalConfig.Encryption.PrivateKey != nil && globalConfig.Encryption.PrivateKey.Value != "" {
-				privKeyData, err := base64.StdEncoding.DecodeString(globalConfig.Encryption.PrivateKey.Value)
-				if err != nil {
-					privKeyData = []byte(globalConfig.Encryption.PrivateKey.Value)
-				}
-				options.PrivateKeyPEMBytes = privKeyData
-			}
-			if globalConfig.Encryption.PublicKey != nil && globalConfig.Encryption.PublicKey.Value != "" {
-				pubKeyData, err := base64.StdEncoding.DecodeString(globalConfig.Encryption.PublicKey.Value)
-				if err != nil {
-					pubKeyData = []byte(globalConfig.Encryption.PublicKey.Value)
-				}
-				options.PublicKeyPEMBytes = pubKeyData
-			}
-		}
-
-		// Pass through attestation config - evllm-proxy handles all verification
-		if globalConfig.Encryption.Attestation != nil {
-			att := globalConfig.Encryption.Attestation
-			options.AttestationValidityPeriodMinutes = att.ValidityPeriodMinutes
-			options.AttestationRenewalThresholdSeconds = att.RenewalThresholdSeconds
-			options.AttestationVerifyRegisters = att.VerifyRegisters
-
-			// Pass through approved measurements if configured
-			if att.ApprovedMeasurements != nil {
-				options.AttestationApprovedRegister1 = att.ApprovedMeasurements.RTMR1
-				options.AttestationApprovedRegister2 = att.ApprovedMeasurements.RTMR2
-				options.AttestationApprovedRegister3 = att.ApprovedMeasurements.RTMR3
-			}
-		}
-
-		if options.AttestationValidityPeriodMinutes <= 0 {
-			options.AttestationValidityPeriodMinutes = 60
-		}
-		if options.AttestationRenewalThresholdSeconds <= 0 {
-			options.AttestationRenewalThresholdSeconds = 30
-		}
-	}
-
-	// Create the client
-	newClient, err := sindriclient.NewSindriClient(&options)
+	// Create the client.
+	newClient, err := sindriclient.NewSindriClient(options)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create SindriClient: %w", err)
 	}
@@ -480,7 +461,7 @@ func chatCompletion(this js.Value, args []js.Value) interface{} {
 			// Use the evllm-proxy client with attestation and encryption.
 			// The client already has the correct auth/endpoint from when it was created
 			logger.Info("Calling ChatCompletionNoStream",
-				zap.String("clientApiKey", apiKey[:20]+"..."), // Log first 20 chars
+				zap.String("clientApiKey", safeSubstring(apiKey, 20)), // Log first 20 chars safely
 				zap.String("clientBaseURL", baseURL),
 			)
 			completion, err := client.ChatCompletionNoStream(&params, &td)
