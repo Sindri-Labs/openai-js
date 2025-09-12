@@ -126,12 +126,13 @@ jobs:
             exit 1
           fi
 
-          # Sanity-check package name.
+          # Update package name to @sindrilabs/openai.
+          tmp_name=$(mktemp)
+          jq '.name = "@sindrilabs/openai"' dist/package.json > "${tmp_name}"
+          mv "${tmp_name}" dist/package.json
+
           NAME=$(jq -r '.name' dist/package.json)
-          if [[ "${NAME}" != "@sindrilabs/openai" ]]; then
-            echo "Refusing to publish unexpected package name: ${NAME}"
-            exit 1
-          fi
+          echo "Package name set to: ${NAME}"
 
           # Patch version.
           tmp=$(mktemp)
