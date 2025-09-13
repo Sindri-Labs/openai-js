@@ -1001,6 +1001,7 @@ var (
 		(*EnclaveReport)(nil),              // 8: tdx.EnclaveReport
 	}
 )
+
 var file_tdx_proto_depIdxs = []int32{
 	1, // 0: tdx.QuoteV4.header:type_name -> tdx.Header
 	2, // 1: tdx.QuoteV4.td_quote_body:type_name -> tdx.TDQuoteBody

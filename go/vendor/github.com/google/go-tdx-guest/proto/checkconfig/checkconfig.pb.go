@@ -511,6 +511,7 @@ var (
 		(*Config)(nil),            // 4: checkconfig.Config
 	}
 )
+
 var file_checkconfig_proto_depIdxs = []int32{
 	1, // 0: checkconfig.Policy.header_policy:type_name -> checkconfig.HeaderPolicy
 	2, // 1: checkconfig.Policy.td_quote_body_policy:type_name -> checkconfig.TDQuoteBodyPolicy
