@@ -119,7 +119,7 @@ jobs:
           chmod -R u+rwX dist
 
           # Validate and extract semver from tag: vMAJOR.MINOR.PATCH(-prerelease)?
-          if [[ "${TAG_NAME}" =~ ^v([0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9\.-]+)?)$ ]]; then
+          if [[ "${TAG_NAME}" =~ ^v([0-9]+\.[0-9]+\.[0-9]+([-][A-Za-z0-9.-]+)?)$ ]]; then
             VERSION="${BASH_REMATCH[1]}"
           else
             echo "Release tag must match ^vMAJOR.MINOR.PATCH(-prerelease)? ; got: ${TAG_NAME}"
