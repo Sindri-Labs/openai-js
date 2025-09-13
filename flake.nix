@@ -20,44 +20,42 @@
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        # Overlay to patch Go to always use Fetch API in WASM
-        goWasmFetchOverlay = final: prev: {
-          go_1_24 = prev.go_1_24.overrideAttrs (oldAttrs: {
-            patches = (oldAttrs.patches or [ ]) ++ [
-              (final.writeText "go-wasm-always-use-fetch.patch" ''
-                --- a/src/net/http/roundtrip_js.go
-                +++ b/src/net/http/roundtrip_js.go
-                @@ -13,7 +13,6 @@ import (
-                 	"io"
-                 	"net/http/internal/ascii"
-                 	"strconv"
-                -	"strings"
-                 	"syscall/js"
-                 )
-                 
-                @@ -56,8 +55,8 @@ var jsFetchMissing = js.Global().Get("fetch").IsUndefined()
-                 //
-                 // TODO(go.dev/issue/60810): See if it's viable to test the Fetch API
-                 // code path.
-                -var jsFetchDisabled = js.Global().Get("process").Type() == js.TypeObject &&
-                -	strings.HasPrefix(js.Global().Get("process").Get("argv0").String(), "node")
-                +// Patched to always use Fetch API for better WASM compatibility in Node.js
-                +var jsFetchDisabled = false
-                 
-                 // RoundTrip implements the [RoundTripper] interface using the WHATWG Fetch API.
-                 func (t *Transport) RoundTrip(req *Request) (*Response, error) {
-              '')
-            ];
-          });
-        };
-
-        # Apply overlay to get patched Go
+        # Import nixpkgs without any overlays
         pkgs = import nixpkgs {
           inherit system;
-          overlays = [ goWasmFetchOverlay ];
         };
 
+        # Use regular Go for everything except WASM builds
         go = pkgs.go_1_24;
+
+        # Create patched Go specifically for WASM builds
+        goWasm = go.overrideAttrs (oldAttrs: {
+          patches = (oldAttrs.patches or [ ]) ++ [
+            (pkgs.writeText "go-wasm-always-use-fetch.patch" ''
+              --- a/src/net/http/roundtrip_js.go
+              +++ b/src/net/http/roundtrip_js.go
+              @@ -13,7 +13,6 @@ import (
+               	"io"
+               	"net/http/internal/ascii"
+               	"strconv"
+              -	"strings"
+               	"syscall/js"
+               )
+               
+              @@ -56,8 +55,8 @@ var jsFetchMissing = js.Global().Get("fetch").IsUndefined()
+               //
+               // TODO(go.dev/issue/60810): See if it's viable to test the Fetch API
+               // code path.
+              -var jsFetchDisabled = js.Global().Get("process").Type() == js.TypeObject &&
+              -	strings.HasPrefix(js.Global().Get("process").Get("argv0").String(), "node")
+              +// Patched to always use Fetch API for better WASM compatibility in Node.js
+              +var jsFetchDisabled = false
+               
+               // RoundTrip implements the [RoundTripper] interface using the WHATWG Fetch API.
+               func (t *Transport) RoundTrip(req *Request) (*Response, error) {
+            '')
+          ];
+        });
         nodejs = pkgs.nodejs_22;
 
         # Treefmt config.
@@ -86,7 +84,7 @@
 
           nativeBuildInputs = [
             pkgs.bash
-            go
+            goWasm # Use patched Go for WASM build
             nodejs
             pkgs.yarn
             pkgs.yarnConfigHook
@@ -174,9 +172,9 @@
             echo "  return bytes;" >> dist/sindri/wasm/wasm.mjs
             echo "}" >> dist/sindri/wasm/wasm.mjs
 
-            # Copy the real Go wasm_exec.js runtime.
-            cp "${go}/share/go/lib/wasm/wasm_exec.js" dist/sindri/wasm/wasm_exec.js
-            cp "${go}/share/go/lib/wasm/wasm_exec.js" dist/sindri/wasm/wasm_exec.mjs
+            # Copy the real Go wasm_exec.js runtime from the patched Go.
+            cp "${goWasm}/share/go/lib/wasm/wasm_exec.js" dist/sindri/wasm/wasm_exec.js
+            cp "${goWasm}/share/go/lib/wasm/wasm_exec.js" dist/sindri/wasm/wasm_exec.mjs
 
             runHook postBuild
           '';
