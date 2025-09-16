@@ -4,7 +4,7 @@
  */
 
 // Endpoint configuration.
-export const SINDRI_BASE_URL = 'https://sindri.app/api/ai/v1/openai';
+export const SINDRI_BASE_URL = 'https://sindri.app/api/ai/v1/openai/v1';
 export const SINDRI_API_PREFIX = 'sindri_';
 
 // TEE detection patterns.
