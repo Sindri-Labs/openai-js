@@ -321,8 +321,16 @@ func initializeSindriClient(this js.Value, args []js.Value) interface{} {
 
 // getOrCreateClient gets a cached client or creates a new one for the given auth/endpoint.
 func getOrCreateClient(apiKey, baseURL string) (*sindriclient.SindriClient, error) {
-	// Create cache key from apiKey and baseURL
-	cacheKey := fmt.Sprintf("%s|%s", apiKey, baseURL)
+	// Strip trailing /v1 from baseURL if present.
+	// The OpenAI SDK uses /v1 at the end for standard API compatibility,
+	// but the evllm-proxy attestation manager expects the URL without it.
+	clientBaseURL := baseURL
+	if strings.HasSuffix(clientBaseURL, "/v1") {
+		clientBaseURL = clientBaseURL[:len(clientBaseURL)-3]
+	}
+
+	// Create cache key from apiKey and the adjusted baseURL
+	cacheKey := fmt.Sprintf("%s|%s", apiKey, clientBaseURL)
 
 	// Try to get from cache first
 	clientCacheMux.RLock()
@@ -343,8 +351,8 @@ func getOrCreateClient(apiKey, baseURL string) (*sindriclient.SindriClient, erro
 		return client, nil
 	}
 
-	// Build client options with the provided auth.
-	options, err := buildClientOptions(baseURL, apiKey)
+	// Build client options with the adjusted base URL.
+	options, err := buildClientOptions(clientBaseURL, apiKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build client options: %w", err)
 	}
@@ -359,6 +367,8 @@ func getOrCreateClient(apiKey, baseURL string) (*sindriclient.SindriClient, erro
 	clientCache[cacheKey] = newClient
 
 	logger.Info("Created new SindriClient",
+		zap.String("originalBaseURL", baseURL),
+		zap.String("adjustedBaseURL", clientBaseURL),
 		zap.String("cacheKey", cacheKey),
 		zap.Bool("encryptionEnabled", options.EnableEncryption),
 	)
