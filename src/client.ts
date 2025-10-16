@@ -19,6 +19,9 @@ import { AbstractPage, type CursorPageParams, CursorPageResponse, PageResponse }
 import * as Uploads from './core/uploads';
 import * as API from './resources/index';
 import { APIPromise } from './core/api-promise';
+import { SindriTEE } from './sindri/index';
+import type { SindriTEEConfig } from './sindri/types';
+import { isSindriEndpoint, SINDRI_BASE_URL } from './sindri/constants';
 import {
   Batch,
   BatchCreateParams,
@@ -314,6 +317,8 @@ export class OpenAI {
   #encoder: Opts.RequestEncoder;
   protected idempotencyHeader?: string;
   private _options: ClientOptions;
+  private sindriInitialized = false;
+  private sindriInitPromise: Promise<void> | null = null;
 
   /**
    * API Client for interfacing with the OpenAI API.
@@ -351,7 +356,7 @@ export class OpenAI {
       project,
       webhookSecret,
       ...opts,
-      baseURL: baseURL || `https://api.openai.com/v1`,
+      baseURL: baseURL || SINDRI_BASE_URL,
     };
 
     if (!options.dangerouslyAllowBrowser && isRunningInBrowser()) {
@@ -362,6 +367,11 @@ export class OpenAI {
 
     this.baseURL = options.baseURL!;
     this.timeout = options.timeout ?? OpenAI.DEFAULT_TIMEOUT /* 10 minutes */;
+
+    // Auto-detect Sindri endpoints and initialize WASM encryption.
+    if (isSindriEndpoint(this.baseURL)) {
+      this.initializeSindriWASM();
+    }
     this.logger = options.logger ?? console;
     const defaultLogLevel = 'warn';
     // Set default logLevel early so that we can log a warning in parseLogLevel.
@@ -403,6 +413,20 @@ export class OpenAI {
       ...options,
     });
     return client;
+  }
+
+  /**
+   * Configure TEE (Trusted Execution Environment) settings.
+   */
+  configureTEE(config: Partial<SindriTEEConfig>): void {
+    SindriTEE.updateConfig(config);
+  }
+
+  /**
+   * Get current TEE configuration.
+   */
+  getTEEConfig(): Readonly<SindriTEEConfig> | null {
+    return SindriTEE.getConfig();
   }
 
   /**
@@ -451,10 +475,17 @@ export class OpenAI {
     defaultBaseURL?: string | undefined,
   ): string {
     const baseURL = (!this.#baseURLOverridden() && defaultBaseURL) || this.baseURL;
+
+    // Sindri endpoints already have /v1 in their base URL, no need to add it
+    let adjustedPath = path;
+
     const url =
-      isAbsoluteURL(path) ?
-        new URL(path)
-      : new URL(baseURL + (baseURL.endsWith('/') && path.startsWith('/') ? path.slice(1) : path));
+      isAbsoluteURL(adjustedPath) ?
+        new URL(adjustedPath)
+      : new URL(
+          baseURL +
+            (baseURL.endsWith('/') && adjustedPath.startsWith('/') ? adjustedPath.slice(1) : adjustedPath),
+        );
 
     const defaultQuery = this.defaultQuery();
     if (!isEmptyObj(defaultQuery)) {
@@ -482,7 +513,28 @@ export class OpenAI {
   protected async prepareRequest(
     request: RequestInit,
     { url, options }: { url: string; options: FinalRequestOptions },
-  ): Promise<void> {}
+  ): Promise<void> {
+    // Handle Sindri encryption if needed
+    if (isSindriEndpoint(url)) {
+      await this.ensureSindriInitialized();
+
+      if (this.sindriInitialized && request.body) {
+        try {
+          // Dynamic import to avoid circular dependencies
+          const { SindriTEE } = await import('./sindri/index');
+
+          if (SindriTEE.isEncryptionEnabled()) {
+            // The WASM module handles encryption internally in chatCompletion
+            // We only do manual encryption here for direct API testing
+            loggerFor(this).debug('Sindri encryption is enabled but not used for direct requests');
+          }
+        } catch (error) {
+          loggerFor(this).warn('Failed to encrypt request:', error);
+          // Continue without encryption
+        }
+      }
+    }
+  }
 
   get<Rsp>(path: string, opts?: PromiseOrValue<RequestOptions>): APIPromise<Rsp> {
     return this.methodRequest('get', path, opts);
@@ -532,6 +584,79 @@ export class OpenAI {
     const maxRetries = options.maxRetries ?? this.maxRetries;
     if (retriesRemaining == null) {
       retriesRemaining = maxRetries;
+    }
+
+    // Intercept chat completion requests for TEE processing.
+    if (options.path === '/chat/completions' && options.method === 'post') {
+      try {
+        const teeResponse = await SindriTEE.interceptChatCompletion(
+          options.body,
+          options,
+          this.apiKey,
+          this.baseURL,
+        );
+        if (teeResponse) {
+          // Check if this is a streaming response
+          if (teeResponse.__tee_stream && teeResponse.chunks) {
+            // Create a ReadableStream for streaming response
+            const encoder = new TextEncoder();
+            const stream = new ReadableStream({
+              start(controller) {
+                // Process each chunk
+                for (const chunkStr of teeResponse.chunks) {
+                  try {
+                    // Add SSE format: "data: {json}\n\n"
+                    const sseData = `data: ${chunkStr}\n\n`;
+                    controller.enqueue(encoder.encode(sseData));
+                  } catch (err) {
+                    console.error('[TEE] Error processing chunk:', err);
+                  }
+                }
+                // Send the final [DONE] marker
+                controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+                controller.close();
+              },
+            });
+
+            const response = new Response(stream, {
+              status: 200,
+              headers: {
+                'content-type': 'text/event-stream',
+                'cache-control': 'no-cache',
+                connection: 'keep-alive',
+              },
+            });
+            const requestLogID =
+              'tee_stream_' + ((Math.random() * (1 << 24)) | 0).toString(16).padStart(6, '0');
+            return {
+              response,
+              options,
+              controller: new AbortController(),
+              requestLogID,
+              retryOfRequestLogID: retryOfRequestLogID,
+              startTime: Date.now(),
+            };
+          } else {
+            // Non-streaming response
+            const response = new Response(JSON.stringify(teeResponse), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+            const requestLogID = 'tee_' + ((Math.random() * (1 << 24)) | 0).toString(16).padStart(6, '0');
+            return {
+              response,
+              options,
+              controller: new AbortController(),
+              requestLogID,
+              retryOfRequestLogID: retryOfRequestLogID,
+              startTime: Date.now(),
+            };
+          }
+        }
+      } catch (error) {
+        // If TEE processing fails, log and continue with normal flow.
+        console.error('[TEE] Failed to process chat completion:', error);
+      }
     }
 
     await this.prepareOptions(options);
@@ -915,6 +1040,44 @@ export class OpenAI {
       return { bodyHeaders: undefined, body: Shims.ReadableStreamFrom(body as AsyncIterable<Uint8Array>) };
     } else {
       return this.#encoder({ body, headers });
+    }
+  }
+
+  /**
+   * Initialize WASM module for Sindri encryption.
+   */
+  private initializeSindriWASM(): void {
+    if (this.sindriInitialized || this.sindriInitPromise) {
+      return;
+    }
+
+    // Initialize asynchronously without blocking constructor
+    this.sindriInitPromise = (async () => {
+      try {
+        // Dynamic import to avoid circular dependencies
+        const { SindriTEE } = await import('./sindri/index');
+
+        // Initialize with default configuration
+        // Encryption will be enabled by default with ephemeral keys
+        await SindriTEE.initialize({
+          debug: false,
+        });
+
+        this.sindriInitialized = true;
+        loggerFor(this).debug('Sindri WASM encryption initialized');
+      } catch (error) {
+        loggerFor(this).warn('Failed to initialize Sindri WASM encryption:', error);
+        // Continue without encryption if WASM fails
+      }
+    })();
+  }
+
+  /**
+   * Ensure Sindri WASM is initialized before making requests.
+   */
+  private async ensureSindriInitialized(): Promise<void> {
+    if (this.sindriInitPromise) {
+      await this.sindriInitPromise;
     }
   }
 
