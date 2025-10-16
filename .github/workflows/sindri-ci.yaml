@@ -5,6 +5,8 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
+  release:
+    types: [published]
 
 jobs:
   lint-and-build:
@@ -71,3 +73,94 @@ jobs:
           test -f result/index.d.ts
           test -f result/sindri/index.js
           test -f result/sindri/index.d.ts
+
+  deploy:
+    name: publish to npm on release
+    if: github.event_name == 'release'
+    needs: lint-and-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Needed to upload the .tgz to the GitHub Release.
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.0.3
+        with:
+          node-version: '22'
+          cache: 'yarn'
+          registry-url: 'https://registry.npmjs.org'
+          always-auth: true
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@c134e4c9e34bac6cab09cf239815f9339aaaf84e # v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install dependencies
+        run: |
+          yarn install
+          cd examples
+          yarn install
+
+      - name: Build the package
+        run: nix build
+
+      - name: Prepare dist and set version from release tag
+        env:
+          TAG_NAME: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          rm -rf dist
+          mkdir -p dist
+          # Copy without preserving ownership so files are writable.
+          cp -R result/. dist/
+          chmod -R u+rwX dist
+
+          # Validate and extract semver from tag: vMAJOR.MINOR.PATCH(-prerelease)?
+          if [[ "${TAG_NAME}" =~ ^v([0-9]+\.[0-9]+\.[0-9]+([-][A-Za-z0-9.-]+)?)$ ]]; then
+            VERSION="${BASH_REMATCH[1]}"
+          else
+            echo "Release tag must match ^vMAJOR.MINOR.PATCH(-prerelease)? ; got: ${TAG_NAME}"
+            exit 1
+          fi
+
+          # Update package name to @sindrilabs/openai.
+          tmp_name=$(mktemp)
+          jq '.name = "@sindrilabs/openai"' dist/package.json > "${tmp_name}"
+          mv "${tmp_name}" dist/package.json
+
+          NAME=$(jq -r '.name' dist/package.json)
+          echo "Package name set to: ${NAME}"
+
+          # Patch version.
+          tmp=$(mktemp)
+          jq --arg v "${VERSION}" '.version = $v' dist/package.json > "${tmp}"
+          mv "${tmp}" dist/package.json
+          echo "Ready to publish ${NAME}@${VERSION}"
+
+      - name: Pack tarball
+        env:
+          TAG_NAME: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          pushd dist >/dev/null
+          PKG_TGZ=$(npm pack)
+          popd >/dev/null
+          mv "dist/${PKG_TGZ}" "sindrilabs-openai.${TAG_NAME}.tgz"
+          ls -l "sindrilabs-openai.${TAG_NAME}.tgz"
+
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }} # Used by setup-node's npm rc.
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Publish scoped package publicly; always tag as latest (even for pre-releases).
+          (cd dist && npm publish --access public --tag latest)
+
+      - name: Attach tarball to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: sindrilabs-openai.${{ github.event.release.tag_name }}.tgz
