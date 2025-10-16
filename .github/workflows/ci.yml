@@ -72,7 +72,7 @@ jobs:
     timeout-minutes: 10
     name: test
     runs-on: ${{ github.repository == 'stainless-sdks/openai-typescript' && 'depot-ubuntu-24.04' || 'ubuntu-latest' }}
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.fork
+    if: github.ref == 'refs/heads/master' && github.repository == 'openai/openai-node'
     steps:
       - uses: actions/checkout@v4
 
